@@ -69,27 +69,3 @@ export async function getBlastRadiusJobBatch(req: Request, res: Response): Promi
 
   ok(res, { page, pageSize, total, results })
 }
-
-async function pollOneAnalysis(
-  qx: Awaited<ReturnType<typeof getPackagesQx>>,
-  requestedAnalysisId: string,
-): Promise<BlastRadiusAnalysisBulkEntry> {
-  const analysis = await blastRadiusDal.getAnalysisDetail(qx, requestedAnalysisId)
-  if (!analysis) {
-    return { requestedAnalysisId, found: false, analysis: null }
-  }
-
-  const done = analysis.status === 'done'
-  const [verdictRows, excludedByRangeCount] = done
-    ? await Promise.all([
-        blastRadiusDal.getVerdictResults(qx, requestedAnalysisId),
-        blastRadiusDal.getDependentsExcludedByRangeCount(qx, requestedAnalysisId),
-      ])
-    : [[], 0]
-
-  return {
-    requestedAnalysisId,
-    found: true,
-    analysis: toBlastRadiusAnalysis(analysis, verdictRows, excludedByRangeCount),
-  }
-}
