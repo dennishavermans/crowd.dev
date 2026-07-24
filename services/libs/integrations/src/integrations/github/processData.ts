@@ -189,8 +189,8 @@ const parseMember = (memberData: GithubPrepareMemberOutput): IMemberData => {
 
       if (orgs && company.length > 0) {
         const organizationPayload = {
-          displayName: orgs.name,
-          names: [orgs.name],
+          displayName: orgs.name || '',
+          names: [orgs.name || ''],
           identities: [
             {
               platform: PlatformType.GITHUB,
