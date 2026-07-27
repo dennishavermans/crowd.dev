@@ -8,24 +8,76 @@ DESCRIPTION >
     replacement for that table is `collection_contributors_leaderboard` (a differently-shaped
     pipe - see its own DESCRIPTION for why a naive collectionSlug branch on the single-project
     leaderboard pipe isn't used there either).
-    - Combines data from `collection_contributors_leaderboard` and `active_contributors` (both
-    already collectionSlug-aware) to provide dependency risk assessment at collection scale.
+    - **Two paths, branched at template-render time only, same pattern as
+    `collection_contributors_leaderboard.pipe`:**
+    - **Precomputed path** - matches when the caller passes an explicit `presetKey` (one of the 8
+    values `collection_contributors_leaderboard_copy_<presetKey>.pipe` materializes) and
+    `repos`/`platform`/`activity_type` are absent and `limit` (if given) is exactly 100. Reads
+    `collection_contributor_dependency_copy_ds`, a daily `TYPE COPY` materialization (see
+    `collection_contributor_dependency_copy.pipe`) that is itself a pure downstream transform of
+    `collection_contributors_leaderboard_copy_ds` (Phase 2) - no raw activity scan happens on this
+    path at all. `presetKey` is required (not a startDate/endDate value match) for the same reason
+    documented on `collection_contributors_leaderboard.pipe`: ClickHouse does not short-circuit
+    UNION ALL branches on a WHERE guard, so routing must be resolved at template-render time.
+    - Supersedes the old single-variant precomputed path (v1, `collection_contributor_dependency_copy_ds`,
+    unfiltered case only) - this exists because the live computation - via
+    `collection_contributors_leaderboard`'s `collection_member_aggregates` node - must fully
+    materialize a `GROUP BY af.memberId` over the entire filtered activity set before it can
+    ORDER BY/LIMIT (LIMIT only reduces output size, not scan/aggregation cost), which at collection
+    scale (e.g. `cncf` has 149,677 distinct contributors) triggered a Tinybird production
+    rate-limit/concurrency alert on `lfx_insights` from timeouts under load.
+    - **Live path (default: no `presetKey`, or any of `repos`/`platform`/`activity_type` present,
+    or `limit` other than 100)** - unchanged: combines `collection_contributors_leaderboard` and
+    `active_contributors` (both already collectionSlug-aware). Also the safe fallback while the
+    frontend has not yet been updated to send `presetKey` for this widget.
     - Parameters:
     - `collectionSlug`: Required collection slug (e.g., 'cncf') - inherited from `segments_filtered_by_collection`.
-    - `repos`: Optional array of repository URLs for filtering (inherited from `segments_filtered_by_collection`)
-    - `startDate`: Optional DateTime filter for activities after timestamp (e.g., '2024-01-01 00:00:00')
-    - `endDate`: Optional DateTime filter for activities before timestamp (e.g., '2024-12-31 23:59:59')
-    - `platform`: Optional string filter for source platform (e.g., 'github', 'discord', 'slack')
-    - `activity_type`: Optional string filter for single activity type (e.g., 'authored-commit')
-    - `includeCollaborations`: Optional boolean, defaults to false - same toggle as the single-project pipe.
+    - `presetKey`: Optional string, one of the 8 values `collection_contributors_leaderboard_copy_<presetKey>.pipe`
+    materializes (`past90days`, `past180days`, `past365days`, `previousQuarter`, `previousYear`,
+    `previous5years`, `previous10years`, `allTime`). Presence (with no repos/platform/activity_type
+    and limit=100) routes to the precomputed path; absence routes to the live path.
+    - `repos`: Optional array of repository URLs for filtering (inherited from `segments_filtered_by_collection`). Presence routes to the live path.
+    - `startDate`: Optional DateTime filter for activities after timestamp (e.g., '2024-01-01 00:00:00') - live path only; ignored by the precomputed path, which keys on `presetKey` instead.
+    - `endDate`: Optional DateTime filter for activities before timestamp (e.g., '2024-12-31 23:59:59') - live path only; ignored by the precomputed path, which keys on `presetKey` instead.
+    - `platform`: Optional string filter for source platform (e.g., 'github', 'discord', 'slack'). Presence routes to the live path.
+    - `activity_type`: Optional string filter for single activity type (e.g., 'authored-commit'). Presence routes to the live path.
+    - `includeCollaborations`: Optional boolean, defaults to false - same toggle as the single-project pipe. Both true and false route to the precomputed path (both are materialized); only `repos`/`platform`/`activity_type`/non-100 `limit` force the live path.
     - `limit`: Optional integer for the number of top contributors to rank before finding the 51%
-    cutoff. Inherited by `collection_contributors_leaderboard` (this pipe has no default of its
-    own), whose own default is 10 if omitted - callers doing bus-factor analysis should pass
-    limit=100 explicitly (same convention as the single-project `contributor_dependency.pipe` /
-    `contributors_leaderboard.pipe` pair) to reliably reach the 51% cutoff.
+    cutoff. Inherited by `collection_contributors_leaderboard` on the live path (this pipe has no
+    default of its own), whose own default is 10 if omitted - callers doing bus-factor analysis
+    should pass limit=100 explicitly (same convention as the single-project
+    `contributor_dependency.pipe` / `contributors_leaderboard.pipe` pair) to reliably reach the 51%
+    cutoff. A value other than 100 routes to the live path.
     - Response: `id`, `displayName`, `githubHandleArray`, `contributionCount`, `contributionPercentage`, `roles`, `contributionPercentageRunningTotal`, `totalContributorCount`
 
 TAGS "Insights, Widget", "Collection", "Contributors"
+
+NODE collection_contributor_dependency_precomputed
+DESCRIPTION >
+    Precomputed path: point lookup into the latest daily materialization, filtered to the rows the
+    live pipe's WHERE clause would itself return (`isBusFactorCutoff = 1`), ordered by rank.
+    Resolves to the latest complete snapshot via `snapshotId = max(snapshotId)`, mirroring
+    `collection_contributors_leaderboard.pipe`'s precomputed path.
+
+SQL >
+    %
+    SELECT
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        contributionPercentageRunningTotal,
+        totalContributorCount
+    FROM collection_contributor_dependency_copy_ds
+    WHERE
+        snapshotId = (SELECT max(snapshotId) FROM collection_contributor_dependency_copy_ds)
+        AND collectionSlug = {{ String(collectionSlug, description="Filter by collection slug", required=True) }}
+        AND presetKey = {{ String(presetKey, required=True) }}
+        AND includeCollaborations = {{ Int32(Boolean(includeCollaborations, false), description="0 or 1") }}
+        AND isBusFactorCutoff = 1
+    ORDER BY rank ASC
 
 NODE collection_contributions_percentage_running_total
 SQL >
@@ -50,3 +102,27 @@ SQL >
         contributionPercentageRunningTotal <= 51
         OR (contributionPercentageRunningTotal - contributionPercentage < 51)
     ORDER BY contributionPercentageRunningTotal ASC
+
+NODE collection_contributor_dependency_result
+DESCRIPTION >
+    Routes between the precomputed and live paths at template-render time only, same pattern as
+    `collection_contributors_leaderboard.pipe` - template-time branching is the ONLY safe routing
+    pattern in ClickHouse UNION ALL (query-time routing via WHERE guards does not work; ClickHouse
+    evaluates all UNION ALL branches regardless of WHERE conditions).
+
+    PRECOMPUTED PATH (template-time only):
+    - When `presetKey` is explicitly passed by the frontend, routes to precomputed lookup.
+    - Requires: repos/platform/activity_type all absent, limit (if given) exactly 100.
+    - Execution: cheap point lookup into `collection_contributor_dependency_copy_ds`.
+
+    LIVE PATH (all other cases):
+    - Any request without explicit `presetKey` (including no date range, custom dates, etc.).
+    - Any filter present: repos, platform, activity_type, or limit != 100.
+    - Execution: expensive `GROUP BY af.memberId` aggregation via `collection_contributors_leaderboard`.
+
+SQL >
+    %
+    {% if defined(presetKey) and not defined(repos) and not defined(startDate) and not defined(endDate) and not defined(platform) and not defined(activity_type) and Int32(limit, 100) == 100 %}
+        SELECT * FROM collection_contributor_dependency_precomputed
+    {% else %} SELECT * FROM collection_contributions_percentage_running_total
+    {% end %}

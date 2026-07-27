@@ -1,0 +1,98 @@
+DESCRIPTION >
+    - `collection_insights_aggregate_copy.pipe` precomputes `collection_insights_aggregate.pipe`'s
+    result for every collection on a daily schedule, writing into `collection_insights_aggregate_copy_ds`.
+    - Exists because the live computation scans `activityRelations_deduplicated_cleaned_bucket_union`
+    per collection on every request (50,216 requests/30 days, part of the same Contributors-tab
+    cost problem as `collection_contributor_dependency` and `collection_contributors_leaderboard` -
+    see their copy pipes' DESCRIPTIONs for the full incident background).
+    - Unlike those two pipes, `collection_insights_aggregate` has no filter parameters at all
+    (`collectionSlug` only) - its result is always the same for a given collection regardless of
+    date range, activity type, or collaboration toggle, so this is a single-variant-per-collection
+    precompute, no filter matrix needed.
+    - Same fan-out pattern as `collection_contributor_dependency_copy.pipe`: every (collectionSlug,
+    segmentId) pair for enabled projects that belong to at least one collection, computed once from
+    `insights_projects_populated_ds`.
+
+NODE collection_insights_aggregate_copy_segments
+DESCRIPTION >
+    Every (collectionSlug, segmentId, healthScore, organizationCount, contributorCount) row for
+    enabled projects that belong to at least one collection - the fan-out point, matching the live
+    pipe's `collection_insights_aggregate_projects` node but resolved for every collection at once.
+
+SQL >
+    SELECT
+        arrayJoin(collectionsSlugs) AS collectionSlug,
+        id,
+        segmentId,
+        healthScore,
+        organizationCount,
+        contributorCount
+    FROM insights_projects_populated_ds
+    WHERE enabled = 1 AND notEmpty(collectionsSlugs)
+
+NODE collection_insights_aggregate_copy_project_counts
+DESCRIPTION >
+    Per-collection project count and average health score (onboarded projects only), matching the
+    live pipe's two scalar subqueries against `collection_insights_aggregate_projects`.
+
+SQL >
+    SELECT
+        collectionSlug,
+        count(distinct id) AS projectCount,
+        round(avgIf(healthScore, NOT (organizationCount = 0 AND contributorCount = 0))) AS avgHealthScore
+    FROM collection_insights_aggregate_copy_segments
+    GROUP BY collectionSlug
+
+NODE collection_insights_aggregate_copy_segment_members
+DESCRIPTION >
+    Distinct (segmentId, memberId) pairs with qualifying activity - the activity scan happens ONCE
+    per segment here, collapsed to distinct members, before any fan-out to collections. 61% of
+    projects belong to more than one collection (up to 39), so joining the raw activity stream
+    directly against a per-collection mapping (the original version of this node) multiplied the
+    scan by collection-membership count before aggregation - this collapses to distinct members per
+    segment first, which is cheap regardless of how many collections that segment's project belongs
+    to, and only THEN fans out the already-small distinct set to collections in the next node.
+
+SQL >
+    SELECT DISTINCT ar.segmentId AS segmentId, ar.memberId AS memberId
+    FROM activityRelations_deduplicated_cleaned_bucket_union ar
+    WHERE
+        ar.memberId != ''
+        AND ar.segmentId IN (SELECT DISTINCT segmentId FROM collection_insights_aggregate_copy_segments)
+        AND (ar.type, ar.platform) IN (
+            SELECT activityType, platform FROM activityTypes WHERE isCodeContribution = 1 OR isCollaboration = 1
+        )
+
+NODE collection_insights_aggregate_copy_activities
+DESCRIPTION >
+    Fans the already-distinct per-segment member set out to collections via the segment join - this
+    join is now against a small distinct-member table, not the raw activity stream, so collection
+    fan-out no longer multiplies scan cost.
+
+SQL >
+    SELECT s.collectionSlug AS collectionSlug, sm.memberId AS memberId
+    FROM collection_insights_aggregate_copy_segment_members sm
+    INNER JOIN
+        (SELECT DISTINCT collectionSlug, segmentId FROM collection_insights_aggregate_copy_segments) s
+        ON s.segmentId = sm.segmentId
+
+NODE collection_insights_aggregate_copy_result
+DESCRIPTION >
+    One row per collection: project count, deduplicated unique contributor count, and average health
+    score - the exact shape `collection_insights_aggregate.pipe` returns today.
+
+SQL >
+    SELECT
+        c.collectionSlug AS collectionSlug,
+        c.projectCount AS projectCount,
+        uniq(a.memberId) AS uniqueContributorCount,
+        c.avgHealthScore AS avgHealthScore,
+        now64(3) AS updatedAt
+    FROM collection_insights_aggregate_copy_project_counts c
+    INNER JOIN collection_insights_aggregate_copy_activities a ON a.collectionSlug = c.collectionSlug
+    GROUP BY c.collectionSlug, c.projectCount, c.avgHealthScore
+
+TYPE COPY
+TARGET_DATASOURCE collection_insights_aggregate_copy_ds
+COPY_MODE replace
+COPY_SCHEDULE 30 1 * * *

@@ -1,0 +1,73 @@
+DESCRIPTION >
+    `collection_contributor_dependency_copy_previousQuarter.pipe` — Phase 3-split copy for the
+    `previousQuarter` preset. One of 8 pipes.
+
+NODE collection_contributor_dependency_copy_previousQuarter_running_total
+SQL >
+    SELECT
+        collectionSlug,
+        'previousQuarter' AS presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        totalContributorCount
+    FROM collection_contributors_leaderboard_copy_ds
+    WHERE
+        rank <= 100
+        AND presetKey = 'previousQuarter'
+        AND snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)
+
+NODE collection_contributor_dependency_copy_previousQuarter_ranked
+SQL >
+    SELECT
+        collectionSlug,
+        presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        totalContributorCount,
+        sum(contributionPercentage) OVER (
+            PARTITION BY collectionSlug, includeCollaborations
+            ORDER BY contributionPercentage DESC, id
+        ) AS contributionPercentageRunningTotal
+    FROM collection_contributor_dependency_copy_previousQuarter_running_total
+
+NODE collection_contributor_dependency_copy_previousQuarter_result
+SQL >
+    SELECT
+        toStartOfInterval(now(), INTERVAL 1 day) AS snapshotId,
+        collectionSlug,
+        presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        contributionPercentageRunningTotal,
+        totalContributorCount,
+        if(
+            contributionPercentageRunningTotal <= 51
+            OR (contributionPercentageRunningTotal - contributionPercentage < 51),
+            1,
+            0
+        ) AS isBusFactorCutoff,
+        now64(3) AS updatedAt
+    FROM collection_contributor_dependency_copy_previousQuarter_ranked
+
+TYPE COPY
+TARGET_DATASOURCE collection_contributor_dependency_copy_ds
+COPY_MODE append
+COPY_SCHEDULE 35 2 * * *

@@ -1,0 +1,200 @@
+DESCRIPTION >
+    - One of 8 pipes (`collection_contributors_leaderboard_copy_<presetKey>.pipe`, one per
+    presetKey: past90days, past180days, past365days, previousQuarter, previousYear, previous5years,
+    previous10years, allTime) that together replace the single `collection_contributors_leaderboard_copy.pipe`,
+    which computed all 16 variants (8 presets x 2 `includeCollaborations` states) in one job and
+    stalled at zero progress 5 times in production with no root cause found (join-order and
+    stuck-mutation theories both empirically ruled out). Splitting by presetKey cuts each job's date
+    scan/group cost by 8x, on the theory that the full-size job was hitting some Tinybird-side
+    resource ceiling or scheduling issue tied to its size/shape.
+    - Design otherwise unchanged from the original pipe: aggregate to distinct
+    (segmentId, memberId, includeCollaborations) first over the raw activity table (this pipe's date
+    bucket only), THEN fan out to collections - never join the raw activity stream directly against
+    the (collectionSlug, segmentId) mapping before aggregating, since 61% of projects belong to 2+
+    collections (up to 39) and that would multiply scan cost by collection-membership count.
+    - Uses `COPY_MODE append` with a daily `snapshotId`, not `COPY_MODE replace`, because 8
+    independent pipes cannot safely share one `replace`-mode target (replace is a full-table swap -
+    the last pipe to run would wipe out the other 7's rows). This mirrors `leaderboards_copy_ds`'s
+    proven pattern of many independent append-mode copy pipes into one shared datasource, tagged by
+    a discriminator column (`leaderboardType` there, `presetKey` here) plus `snapshotId`. The target
+    datasource's 2-day TTL auto-drops stale snapshots; the serving pipe resolves the latest complete
+    day via `WHERE snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)`.
+    - `past90days` is a rolling window: `today - 90 days` to `today`, matching the frontend's fixed
+    date-range picker option (`insights/frontend/app/components/modules/project/config/date-options.ts`).
+    - `includeCollaborations` widens which `(activityType, platform)` pairs qualify (see
+    `activityTypes_filtered.pipe`): the superset (code contributions OR collaborations) is scanned
+    ONCE per run, and each activity is tagged with which of the 2 collaboration states it qualifies
+    for, rather than scanning twice.
+    - `limit`/`offset` are not filter parameters here - the copy stores every ranked contributor per
+    variant (not just the first page), so the serving pipe can paginate against `rank` directly.
+
+NODE collection_contributors_leaderboard_copy_past90days_segments
+DESCRIPTION >
+    Every (collectionSlug, segmentId) pair for enabled projects that belong to at least one
+    collection - the fan-out point, same as the sibling copy pipes.
+
+SQL >
+    SELECT arrayJoin(collectionsSlugs) AS collectionSlug, segmentId
+    FROM insights_projects_populated_ds
+    WHERE enabled = 1 AND notEmpty(collectionsSlugs)
+
+NODE collection_contributors_leaderboard_copy_past90days_activity_types
+DESCRIPTION >
+    The superset of (activityType, platform) pairs that qualify under EITHER collaboration state,
+    each tagged with which states they qualify for - lets the single downstream scan serve both
+    `includeCollaborations` variants without re-scanning the activity table.
+
+SQL >
+    SELECT
+        activityType,
+        platform,
+        isCodeContribution AS qualifiesExcludingCollab,
+        (isCodeContribution = 1 OR isCollaboration = 1) AS qualifiesIncludingCollab
+    FROM activityTypes
+    WHERE isCodeContribution = 1 OR isCollaboration = 1
+
+NODE collection_contributors_leaderboard_copy_past90days_segment_members
+DESCRIPTION >
+    The single expensive scan: distinct (segmentId, memberId, includeCollaborations) combinations
+    with a contribution count, computed ONCE over the raw activity table for this pipe's date
+    bucket only - no cross join against other presets, so this job's fanout is 8x smaller than the
+    original single 16-variant pipe.
+    - The segment filter is applied via an upfront INNER JOIN (not a `segmentId IN (SELECT ...)`
+    WHERE clause) so ClickHouse narrows the ~69M-row-per-bucket activity table down to the ~11K
+    rows that belong to a collection-linked segment BEFORE the GROUP BY.
+
+SQL >
+    SELECT
+        ar.segmentId AS segmentId,
+        ar.memberId AS memberId,
+        0 AS includeCollaborations,
+        count(ar.activityId) AS contributionCount
+    FROM activityRelations_deduplicated_cleaned_bucket_union ar
+    INNER JOIN
+        (SELECT DISTINCT segmentId FROM collection_contributors_leaderboard_copy_past90days_segments) segs
+        ON ar.segmentId = segs.segmentId
+    INNER JOIN
+        collection_contributors_leaderboard_copy_past90days_activity_types at
+        ON at.activityType = ar.type AND at.platform = ar.platform
+    WHERE
+        ar.memberId != ''
+        AND at.qualifiesExcludingCollab = 1
+        AND ar.timestamp > toStartOfDay(today() - INTERVAL 90 DAY)
+    GROUP BY ar.segmentId, ar.memberId
+    UNION ALL
+    SELECT
+        ar.segmentId AS segmentId,
+        ar.memberId AS memberId,
+        1 AS includeCollaborations,
+        count(ar.activityId) AS contributionCount
+    FROM activityRelations_deduplicated_cleaned_bucket_union ar
+    INNER JOIN
+        (SELECT DISTINCT segmentId FROM collection_contributors_leaderboard_copy_past90days_segments) segs
+        ON ar.segmentId = segs.segmentId
+    INNER JOIN
+        collection_contributors_leaderboard_copy_past90days_activity_types at
+        ON at.activityType = ar.type AND at.platform = ar.platform
+    WHERE
+        ar.memberId != ''
+        AND at.qualifiesIncludingCollab = 1
+        AND ar.timestamp > toStartOfDay(today() - INTERVAL 90 DAY)
+    GROUP BY ar.segmentId, ar.memberId
+
+NODE collection_contributors_leaderboard_copy_past90days_fanned
+DESCRIPTION >
+    Fans the already-aggregated, already-small per-segment variant rows out to collections via the
+    segment join - this join is against a pre-aggregated table now, not the raw activity stream, so
+    collection fan-out no longer multiplies scan cost.
+
+SQL >
+    SELECT
+        s.collectionSlug AS collectionSlug,
+        sm.memberId AS memberId,
+        sm.includeCollaborations AS includeCollaborations,
+        sm.contributionCount AS contributionCount
+    FROM collection_contributors_leaderboard_copy_past90days_segment_members sm
+    INNER JOIN collection_contributors_leaderboard_copy_past90days_segments s ON s.segmentId = sm.segmentId
+
+NODE collection_contributors_leaderboard_copy_past90days_collapsed
+DESCRIPTION >
+    A project can appear in a collection via more than one segment mapping row, so contribution
+    counts for the same (collectionSlug, memberId, includeCollaborations) are summed across any
+    duplicate segment joins before ranking.
+
+SQL >
+    SELECT
+        collectionSlug,
+        memberId,
+        includeCollaborations,
+        sum(contributionCount) AS contributionCount
+    FROM collection_contributors_leaderboard_copy_past90days_fanned
+    GROUP BY collectionSlug, memberId, includeCollaborations
+
+NODE collection_contributors_leaderboard_copy_past90days_totals
+DESCRIPTION >
+    Per-(collection, includeCollaborations) scalar totals: total contribution count (for percentage
+    denominators) and total unique contributor count.
+
+SQL >
+    SELECT
+        collectionSlug,
+        includeCollaborations,
+        sum(contributionCount) AS totalContributions,
+        uniqExact(memberId) AS totalContributorCount
+    FROM collection_contributors_leaderboard_copy_past90days_collapsed
+    GROUP BY collectionSlug, includeCollaborations
+
+NODE collection_contributors_leaderboard_copy_past90days_ranked
+DESCRIPTION >
+    Adds a 1-indexed rank within each (collectionSlug, includeCollaborations) partition - no LIMIT
+    here, every ranked contributor is stored so the serving pipe can paginate against `rank`.
+
+SQL >
+    SELECT
+        c.collectionSlug AS collectionSlug,
+        c.memberId AS memberId,
+        c.includeCollaborations AS includeCollaborations,
+        c.contributionCount AS contributionCount,
+        ROUND(c.contributionCount * 100.0 / t.totalContributions, 2) AS contributionPercentage,
+        toUInt32(row_number() OVER (
+            PARTITION BY c.collectionSlug, c.includeCollaborations
+            ORDER BY c.contributionCount DESC, c.memberId DESC
+        )) AS rank,
+        t.totalContributorCount AS totalContributorCount
+    FROM collection_contributors_leaderboard_copy_past90days_collapsed c
+    INNER JOIN
+        collection_contributors_leaderboard_copy_past90days_totals t
+        ON t.collectionSlug = c.collectionSlug
+        AND t.includeCollaborations = c.includeCollaborations
+
+NODE collection_contributors_leaderboard_copy_past90days_result
+DESCRIPTION >
+    Joins member profile/role data, matching the live pipe's response shape exactly, and tags every
+    row with this presetKey plus the run's daily snapshotId for the shared append-mode datasource.
+
+SQL >
+    SELECT
+        toStartOfInterval(now(), INTERVAL 1 day) AS snapshotId,
+        r.collectionSlug AS collectionSlug,
+        'past90days' AS presetKey,
+        r.includeCollaborations AS includeCollaborations,
+        r.rank AS rank,
+        r.memberId AS id,
+        m.avatar AS avatar,
+        m.displayName AS displayName,
+        m.githubHandleArray AS githubHandleArray,
+        r.contributionCount AS contributionCount,
+        r.contributionPercentage AS contributionPercentage,
+        coalesce(mr.roles, []) AS roles,
+        r.totalContributorCount AS totalContributorCount,
+        now64(3) AS updatedAt
+    FROM collection_contributors_leaderboard_copy_past90days_ranked r
+    INNER JOIN members_sorted m ON m.id = r.memberId
+    LEFT JOIN
+        (SELECT memberId, groupUniqArray(role) AS roles FROM maintainers_roles_copy_ds GROUP BY memberId) mr
+        ON mr.memberId = r.memberId
+
+TYPE COPY
+TARGET_DATASOURCE collection_contributors_leaderboard_copy_ds
+COPY_MODE append
+COPY_SCHEDULE 30 1 * * *

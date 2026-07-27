@@ -1,0 +1,64 @@
+DESCRIPTION >
+    - `collection_contributors_leaderboard_copy_ds` contains precomputed leaderboard results for
+    every collection across the fixed 16-variant filter matrix: 8 date-range presets x 2
+    `includeCollaborations` states.
+    - Created via 8 independent `collection_contributors_leaderboard_copy_<presetKey>.pipe` files
+    (`TYPE COPY`, daily schedule, `COPY_MODE append`), one per `presetKey` - split from a single
+    16-variant copy pipe after that pipe's job stalled at zero progress 5 times in production with
+    no root cause found (join-order and stuck-mutation theories both ruled out). Splitting by
+    presetKey cuts each job's date-fanout by 8x. See any of the 8 pipes' DESCRIPTIONs for the full
+    incident background and the design rationale, which mirrors `leaderboards_copy_ds`'s proven
+    pattern of multiple independent append-mode copy pipes sharing one target datasource.
+    - Uses `snapshotId` for temporal versioning, exactly like `leaderboards_copy_ds`: each of the 8
+    pipes appends its own presetKey's rows tagged with the run's daily snapshot instead of using
+    `COPY_MODE replace`, since replace performs a full-table swap and would wipe out the other 7
+    pipes' rows if they shared a `replace` target. The serving pipe reads
+    `WHERE snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)`
+    to always resolve to the latest complete daily run. A 2-day TTL automatically drops stale
+    snapshots, so a partially-complete day (e.g. only 5 of 8 presetKey pipes have run so far) never
+    leaves more than one prior full day's data as fallback.
+    - The 8 `presetKey` values match the frontend date-range picker's fixed options exactly (see
+    `insights/frontend/app/components/modules/project/config/date-options.ts`): `past90days`,
+    `past180days`, `past365days`, `previousQuarter`, `previousYear`, `previous5years`,
+    `previous10years`, `allTime`. The picker's "Custom" option is being removed from collection
+    pages specifically so every reachable request matches one of these 8 buckets.
+    - `snapshotId` is the daily timestamp marking when this row's presetKey snapshot was appended.
+    - `collectionSlug` is the collection this row belongs to.
+    - `presetKey` is which of the 8 fixed date-range presets this row was computed for.
+    - `includeCollaborations` is which of the 2 collaboration-toggle states this row was computed for.
+    - `rank` is the 1-indexed rank of this contributor within (collectionSlug, presetKey,
+    includeCollaborations), ordered by contributionCount DESC, memberId DESC - lets the serving
+    pipe paginate via `rank BETWEEN offset+1 AND offset+limit` instead of re-sorting.
+    - `id` is the member id (contributor).
+    - `avatar`, `displayName`, `githubHandleArray` are the member's profile fields, matching the live
+    pipe's response shape.
+    - `contributionCount` is the member's raw contribution count within the collection for this
+    variant's date range and collaboration state.
+    - `contributionPercentage` is `contributionCount` as a percentage of the variant's total
+    contribution count across the whole collection.
+    - `roles` is the member's maintainer roles within the collection, if any.
+    - `totalContributorCount` is this variant's total unique contributor count for the collection -
+    lets the serving pipe answer `count=true` requests with a point lookup instead of a distinct-count
+    scan.
+    - `updatedAt` is when this row's variant was last (re)computed.
+
+SCHEMA >
+    `snapshotId` DateTime,
+    `collectionSlug` String,
+    `presetKey` LowCardinality(String),
+    `includeCollaborations` UInt8,
+    `rank` UInt32,
+    `id` String,
+    `avatar` String,
+    `displayName` String,
+    `githubHandleArray` Array(String),
+    `contributionCount` UInt64,
+    `contributionPercentage` Float64,
+    `roles` Array(String),
+    `totalContributorCount` UInt64,
+    `updatedAt` DateTime64(3)
+
+ENGINE MergeTree
+ENGINE_PARTITION_KEY snapshotId
+ENGINE_SORTING_KEY snapshotId, collectionSlug, presetKey, includeCollaborations, rank
+ENGINE_TTL toDateTime(snapshotId) + toIntervalDay(2)

@@ -1,0 +1,137 @@
+DESCRIPTION >
+    - One of 8 pipes (`collection_contributors_leaderboard_copy_<presetKey>.pipe`) that together
+    replace the single `collection_contributors_leaderboard_copy.pipe` - see
+    `collection_contributors_leaderboard_copy_past90days.pipe`'s DESCRIPTION for the full split
+    rationale and incident background (shared across all 8).
+    - `allTime` has no date filter at all, matching the frontend's "All time" picker option - this
+    is also the largest/heaviest of the 8 jobs since it scans the full activity history with no
+    time-bound narrowing, so it's scheduled last.
+
+NODE collection_contributors_leaderboard_copy_allTime_segments
+SQL >
+    SELECT arrayJoin(collectionsSlugs) AS collectionSlug, segmentId
+    FROM insights_projects_populated_ds
+    WHERE enabled = 1 AND notEmpty(collectionsSlugs)
+
+NODE collection_contributors_leaderboard_copy_allTime_activity_types
+SQL >
+    SELECT
+        activityType,
+        platform,
+        isCodeContribution AS qualifiesExcludingCollab,
+        (isCodeContribution = 1 OR isCollaboration = 1) AS qualifiesIncludingCollab
+    FROM activityTypes
+    WHERE isCodeContribution = 1 OR isCollaboration = 1
+
+NODE collection_contributors_leaderboard_copy_allTime_segment_members
+SQL >
+    SELECT
+        ar.segmentId AS segmentId,
+        ar.memberId AS memberId,
+        0 AS includeCollaborations,
+        count(ar.activityId) AS contributionCount
+    FROM activityRelations_deduplicated_cleaned_bucket_union ar
+    INNER JOIN
+        (SELECT DISTINCT segmentId FROM collection_contributors_leaderboard_copy_allTime_segments) segs
+        ON ar.segmentId = segs.segmentId
+    INNER JOIN
+        collection_contributors_leaderboard_copy_allTime_activity_types at
+        ON at.activityType = ar.type AND at.platform = ar.platform
+    WHERE
+        ar.memberId != ''
+        AND at.qualifiesExcludingCollab = 1
+    GROUP BY ar.segmentId, ar.memberId
+    UNION ALL
+    SELECT
+        ar.segmentId AS segmentId,
+        ar.memberId AS memberId,
+        1 AS includeCollaborations,
+        count(ar.activityId) AS contributionCount
+    FROM activityRelations_deduplicated_cleaned_bucket_union ar
+    INNER JOIN
+        (SELECT DISTINCT segmentId FROM collection_contributors_leaderboard_copy_allTime_segments) segs
+        ON ar.segmentId = segs.segmentId
+    INNER JOIN
+        collection_contributors_leaderboard_copy_allTime_activity_types at
+        ON at.activityType = ar.type AND at.platform = ar.platform
+    WHERE
+        ar.memberId != ''
+        AND at.qualifiesIncludingCollab = 1
+    GROUP BY ar.segmentId, ar.memberId
+
+NODE collection_contributors_leaderboard_copy_allTime_fanned
+SQL >
+    SELECT
+        s.collectionSlug AS collectionSlug,
+        sm.memberId AS memberId,
+        sm.includeCollaborations AS includeCollaborations,
+        sm.contributionCount AS contributionCount
+    FROM collection_contributors_leaderboard_copy_allTime_segment_members sm
+    INNER JOIN collection_contributors_leaderboard_copy_allTime_segments s ON s.segmentId = sm.segmentId
+
+NODE collection_contributors_leaderboard_copy_allTime_collapsed
+SQL >
+    SELECT
+        collectionSlug,
+        memberId,
+        includeCollaborations,
+        sum(contributionCount) AS contributionCount
+    FROM collection_contributors_leaderboard_copy_allTime_fanned
+    GROUP BY collectionSlug, memberId, includeCollaborations
+
+NODE collection_contributors_leaderboard_copy_allTime_totals
+SQL >
+    SELECT
+        collectionSlug,
+        includeCollaborations,
+        sum(contributionCount) AS totalContributions,
+        uniqExact(memberId) AS totalContributorCount
+    FROM collection_contributors_leaderboard_copy_allTime_collapsed
+    GROUP BY collectionSlug, includeCollaborations
+
+NODE collection_contributors_leaderboard_copy_allTime_ranked
+SQL >
+    SELECT
+        c.collectionSlug AS collectionSlug,
+        c.memberId AS memberId,
+        c.includeCollaborations AS includeCollaborations,
+        c.contributionCount AS contributionCount,
+        ROUND(c.contributionCount * 100.0 / t.totalContributions, 2) AS contributionPercentage,
+        toUInt32(row_number() OVER (
+            PARTITION BY c.collectionSlug, c.includeCollaborations
+            ORDER BY c.contributionCount DESC, c.memberId DESC
+        )) AS rank,
+        t.totalContributorCount AS totalContributorCount
+    FROM collection_contributors_leaderboard_copy_allTime_collapsed c
+    INNER JOIN
+        collection_contributors_leaderboard_copy_allTime_totals t
+        ON t.collectionSlug = c.collectionSlug
+        AND t.includeCollaborations = c.includeCollaborations
+
+NODE collection_contributors_leaderboard_copy_allTime_result
+SQL >
+    SELECT
+        toStartOfInterval(now(), INTERVAL 1 day) AS snapshotId,
+        r.collectionSlug AS collectionSlug,
+        'allTime' AS presetKey,
+        r.includeCollaborations AS includeCollaborations,
+        r.rank AS rank,
+        r.memberId AS id,
+        m.avatar AS avatar,
+        m.displayName AS displayName,
+        m.githubHandleArray AS githubHandleArray,
+        r.contributionCount AS contributionCount,
+        r.contributionPercentage AS contributionPercentage,
+        coalesce(mr.roles, []) AS roles,
+        r.totalContributorCount AS totalContributorCount,
+        now64(3) AS updatedAt
+    FROM collection_contributors_leaderboard_copy_allTime_ranked r
+    INNER JOIN members_sorted m ON m.id = r.memberId
+    LEFT JOIN
+        (SELECT memberId, groupUniqArray(role) AS roles FROM maintainers_roles_copy_ds GROUP BY memberId) mr
+        ON mr.memberId = r.memberId
+
+TYPE COPY
+TARGET_DATASOURCE collection_contributors_leaderboard_copy_ds
+COPY_MODE append
+COPY_SCHEDULE 15 2 * * *

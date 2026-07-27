@@ -1,0 +1,73 @@
+DESCRIPTION >
+    `collection_contributor_dependency_copy_past90days.pipe` — Phase 3-split copy for the
+    `past90days` preset. One of 8 pipes.
+
+NODE collection_contributor_dependency_copy_past90days_running_total
+SQL >
+    SELECT
+        collectionSlug,
+        'past90days' AS presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        totalContributorCount
+    FROM collection_contributors_leaderboard_copy_ds
+    WHERE
+        rank <= 100
+        AND presetKey = 'past90days'
+        AND snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)
+
+NODE collection_contributor_dependency_copy_past90days_ranked
+SQL >
+    SELECT
+        collectionSlug,
+        presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        totalContributorCount,
+        sum(contributionPercentage) OVER (
+            PARTITION BY collectionSlug, includeCollaborations
+            ORDER BY contributionPercentage DESC, id
+        ) AS contributionPercentageRunningTotal
+    FROM collection_contributor_dependency_copy_past90days_running_total
+
+NODE collection_contributor_dependency_copy_past90days_result
+SQL >
+    SELECT
+        toStartOfInterval(now(), INTERVAL 1 day) AS snapshotId,
+        collectionSlug,
+        presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        contributionPercentageRunningTotal,
+        totalContributorCount,
+        if(
+            contributionPercentageRunningTotal <= 51
+            OR (contributionPercentageRunningTotal - contributionPercentage < 51),
+            1,
+            0
+        ) AS isBusFactorCutoff,
+        now64(3) AS updatedAt
+    FROM collection_contributor_dependency_copy_past90days_ranked
+
+TYPE COPY
+TARGET_DATASOURCE collection_contributor_dependency_copy_ds
+COPY_MODE append
+COPY_SCHEDULE 0 2 * * *

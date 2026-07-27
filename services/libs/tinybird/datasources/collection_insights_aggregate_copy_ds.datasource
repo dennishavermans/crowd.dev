@@ -1,0 +1,27 @@
+DESCRIPTION >
+    - `collection_insights_aggregate_copy_ds` contains precomputed aggregate insights metrics
+    (project count, unique contributor count, average health score) for every collection.
+    - Created via `collection_insights_aggregate_copy.pipe` (`TYPE COPY`, daily schedule) to avoid
+    recomputing the same per-collection activity scan on every request - see that pipe's
+    DESCRIPTION for the full rationale.
+    - One row per `collectionSlug` - unlike `collection_contributor_dependency_copy_ds` /
+    `collection_contributors_leaderboard_copy_ds`, there is no filter-variant dimension here since
+    the live pipe this replaces has no filter parameters.
+    - `collectionSlug` is the collection this row belongs to.
+    - `projectCount` is the count of distinct projects in the collection.
+    - `uniqueContributorCount` is the total unique contributors across all projects in the
+    collection, deduplicated.
+    - `avgHealthScore` is the average health score across the collection's onboarded projects,
+    rounded.
+    - `updatedAt` is when this row's collection was last (re)computed.
+
+SCHEMA >
+    `collectionSlug` String,
+    `projectCount` UInt64,
+    `uniqueContributorCount` UInt64,
+    `avgHealthScore` Nullable(Float64),
+    `updatedAt` DateTime64(3)
+
+ENGINE ReplacingMergeTree
+ENGINE_SORTING_KEY collectionSlug
+ENGINE_VER updatedAt

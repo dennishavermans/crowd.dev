@@ -1,0 +1,108 @@
+DESCRIPTION >
+	- `collection_contributor_dependency_copy_allTime.pipe` is one of 8 Phase 3-split copies,
+    each precomputing the bus-factor result for every collection within a single date-range
+    preset (`allTime`). Together with the 7 other presetKey variants, these pipes materialize
+    all 16 (presetKey, includeCollaborations) combinations that the live
+    `collection_contributor_dependency.pipe` would compute (filtered path) or the monolithic
+    Phase 3 copy-all-in-one originally attempted (now split to avoid window-function
+    multi-partition scaling issues).
+    - Deliberately reads only `presetKey = 'allTime'` rows from the upstream
+    `collection_contributors_leaderboard_copy_ds` (already ranked and pre-aggregated per
+    variant), so this pipe's window function operates over only 2 PARTITION BY dimensions
+    (collectionSlug, includeCollaborations) rather than the problematic 3-dimensional
+    multi-variant single-query structure that caused 94% row loss in the monolithic Phase 3
+    design. This matches Phase 2's proven architecture: one pipe per presetKey, with
+    `includeCollaborations` handled as a 2-way split inside (UNION ALL over the two states).
+    - Caps to the top 100 ranked contributors per variant via `WHERE rank <= 100`, matching
+    the live pipe's support.
+
+
+NODE collection_contributor_dependency_copy_allTime_running_total
+DESCRIPTION >
+    Per (collectionSlug, includeCollaborations) variant within the 'allTime' preset, computes
+        the cumulative contributionPercentageRunningTotal via window function.
+
+SQL >
+
+    SELECT
+        collectionSlug,
+        'allTime' AS presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        totalContributorCount
+    FROM collection_contributors_leaderboard_copy_ds
+    WHERE
+        rank <= 100
+        AND presetKey = 'allTime'
+        AND snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)
+
+
+
+NODE collection_contributor_dependency_copy_allTime_ranked
+DESCRIPTION >
+    Computes the cumulative contributionPercentageRunningTotal over the filtered rows,
+        partitioned by (collectionSlug, includeCollaborations) only — no presetKey dimension.
+
+SQL >
+
+    SELECT
+        collectionSlug,
+        presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        totalContributorCount,
+        sum(contributionPercentage) OVER (
+            PARTITION BY collectionSlug, includeCollaborations
+            ORDER BY contributionPercentage DESC, id
+        ) AS contributionPercentageRunningTotal
+    FROM collection_contributor_dependency_copy_allTime_running_total
+
+
+
+NODE collection_contributor_dependency_copy_allTime_result
+DESCRIPTION >
+    Flags the 51% bus-factor cutoff membership.
+
+SQL >
+
+    SELECT
+        toStartOfInterval(now(), INTERVAL 1 day) AS snapshotId,
+        collectionSlug,
+        presetKey,
+        includeCollaborations,
+        rank,
+        id,
+        displayName,
+        githubHandleArray,
+        contributionCount,
+        contributionPercentage,
+        roles,
+        contributionPercentageRunningTotal,
+        totalContributorCount,
+        if(
+            contributionPercentageRunningTotal <= 51
+            OR (contributionPercentageRunningTotal - contributionPercentage < 51),
+            1,
+            0
+        ) AS isBusFactorCutoff,
+        now64(3) AS updatedAt
+    FROM collection_contributor_dependency_copy_allTime_ranked
+
+TYPE copy
+TARGET_DATASOURCE collection_contributor_dependency_copy_ds
+COPY_MODE append
+COPY_SCHEDULE 15 2 * * *
+
+

@@ -7,9 +7,30 @@ DESCRIPTION >
     hundreds of thousands of distinct members at collection scale) before it can apply ORDER BY/LIMIT -
     confirmed via direct timing: the equivalent single-project pipe took 7-16s (once timing out
     entirely at Tinybird's 20s limit) on a 242-project collection, vs 2-3s for the count-only path
-    with no window function. This pipe computes the total contribution count as a separate scalar
-    subquery instead of a window function, avoiding that full-materialization cost.
-    - Supports both count mode (`count=true`) and data mode for pagination-friendly leaderboard display.
+    with no window function.
+    - **Two paths, branched at template-render time only:** production telemetry showed 86% of real
+    requests carry a startDate/endDate filter (not "no filters"), so - per the same decision that
+    shaped `collection_contributor_dependency.pipe`'s precomputed path - the collection-page
+    date-range picker and activity-type/platform dropdown were simplified to a fixed, enumerable
+    surface (8 date presets, no Custom range, no activity-type/platform filtering) specifically so
+    this matrix could be precomputed. See `collection_contributors_leaderboard_copy.pipe`'s
+    DESCRIPTION for the full matrix design and incident background shared with the other
+    Contributors-tab widgets.
+    - **Precomputed path** - matches when the caller passes an explicit `presetKey` (one of the 8
+    values `collection_contributors_leaderboard_copy.pipe` materializes) and `repos`/`platform`/
+    `activity_type`/`activity_types` are absent - reads `collection_contributors_leaderboard_copy_ds`,
+    a daily `TYPE COPY` materialization, instead of recomputing live. `presetKey` is required (not a
+    startDate/endDate value match) because ClickHouse does not short-circuit `UNION ALL` branches on
+    a WHERE guard - both branches' FROM/JOIN/GROUP BY get planned and executed regardless of the
+    guard, confirmed empirically before this pattern was chosen - so routing MUST be resolved at
+    template-render time via `{% if defined(presetKey) %}`, which only ever renders one of the two
+    SQL branches. This means the frontend has to send `presetKey` explicitly for collection-page
+    requests to actually hit the fast path; raw startDate/endDate values are not pattern-matched
+    against the 8 presets at query time.
+    - **Live path (default: no `presetKey`, or any of `repos`/`platform`/`activity_type`/
+    `activity_types` present)** - unchanged: computes the total contribution count as a separate
+    scalar subquery instead of a window function, avoiding full-materialization cost. This is also
+    the safe fallback while the frontend has not yet been updated to send `presetKey`.
     - Always shows `displayName` (not `publicName`) since a collection spans many projects with mixed
     LF/non-LF status - there's no single project-type answer to substitute on, unlike the single-project
     pipe's `is_request_from_non_lf_project` check.
@@ -17,12 +38,16 @@ DESCRIPTION >
     pages' Contributors tab.
     - Parameters:
     - `collectionSlug`: Required collection slug (e.g., 'cncf') - inherited from `segments_filtered_by_collection`.
-    - `repos`: Optional array of repository URLs for filtering (inherited from `segments_filtered_by_collection`)
-    - `startDate`: Optional DateTime filter for activities after timestamp (e.g., '2024-01-01 00:00:00')
-    - `endDate`: Optional DateTime filter for activities before timestamp (e.g., '2024-12-31 23:59:59')
-    - `platform`: Optional string filter for source platform (e.g., 'github', 'discord', 'slack')
-    - `activity_type`: Optional string filter for single activity type (e.g., 'authored-commit')
-    - `activity_types`: Optional array of activity types (e.g., ['authored-commit', 'co-authored-commit'])
+    - `presetKey`: Optional string, one of the 8 values `collection_contributors_leaderboard_copy.pipe`
+    materializes (`past90days`, `past180days`, `past365days`, `previousQuarter`, `previousYear`,
+    `previous5years`, `previous10years`, `allTime`). Presence (with no repos/platform/activity_type/
+    activity_types) routes to the precomputed path; absence routes to the live path.
+    - `repos`: Optional array of repository URLs for filtering (inherited from `segments_filtered_by_collection`). Presence routes to the live path.
+    - `startDate`: Optional DateTime filter for activities after timestamp (e.g., '2024-01-01 00:00:00') - live path only; ignored by the precomputed path, which keys on `presetKey` instead.
+    - `endDate`: Optional DateTime filter for activities before timestamp (e.g., '2024-12-31 23:59:59') - live path only; ignored by the precomputed path, which keys on `presetKey` instead.
+    - `platform`: Optional string filter for source platform (e.g., 'github', 'discord', 'slack'). Presence routes to the live path.
+    - `activity_type`: Optional string filter for single activity type (e.g., 'authored-commit'). Presence routes to the live path.
+    - `activity_types`: Optional array of activity types (e.g., ['authored-commit', 'co-authored-commit']). Presence routes to the live path.
     - `includeCollaborations`: Optional boolean, defaults to false - same toggle as the single-project pipe.
     - `count`: Optional boolean, when true returns contributor count instead of leaderboard data
     - `limit`: Optional integer for result pagination, defaults to 10
@@ -37,7 +62,7 @@ NODE collection_contributors_total
 DESCRIPTION >
     Total contribution count across the collection - a plain aggregate with no GROUP BY, so it's
     cheap regardless of how many distinct members contributed. Computed once and reused as a scalar
-    for the percentage calculation instead of a SUM(...) OVER () window function.
+    for the percentage calculation instead of a SUM(...) OVER () window function. Live path only.
 
 SQL >
     %
@@ -47,7 +72,7 @@ NODE collection_member_aggregates
 DESCRIPTION >
     Per-member contribution counts, ranked and paginated. No window function here - the percentage
     is computed in the next node against the scalar total, so ORDER BY/LIMIT can apply directly
-    after this GROUP BY without waiting on a second full-set pass.
+    after this GROUP BY without waiting on a second full-set pass. Live path only.
 
 SQL >
     %
@@ -61,7 +86,7 @@ SQL >
         OFFSET {{ Int32(offset, 0) }}
     {% end %}
 
-NODE collection_contributors_leaderboard_result
+NODE collection_contributors_leaderboard_live
 SQL >
     %
     {% if Boolean(count, false) %}
@@ -81,4 +106,67 @@ SQL >
         CROSS JOIN collection_contributors_total total
         WHERE m.id IN (SELECT memberId FROM collection_member_aggregates)
         ORDER BY contributionCount DESC
+    {% end %}
+
+NODE collection_contributors_leaderboard_result
+DESCRIPTION >
+    Routes between the precomputed and live paths at template-render time only, eliminating any risk
+    of accidentally executing both branches simultaneously. Template-time branching is the ONLY safe
+    routing pattern in ClickHouse UNION ALL — query-time routing via WHERE guards does NOT work
+    (ClickHouse evaluates all UNION ALL branches regardless of WHERE conditions).
+
+    PRECOMPUTED PATH (template-time only):
+    - When `presetKey` is explicitly passed by the frontend, routes to precomputed lookup.
+    - Requires: repos/platform/activity_type/activity_types all absent (no additional filters).
+    - Execution: cheap point lookup into `collection_contributors_leaderboard_copy_ds`.
+
+    LIVE PATH (all other cases):
+    - Any request without explicit `presetKey` (including no date range, custom dates, etc.).
+    - Any filter present: repos, platform, activity_type, activity_types.
+    - Execution: expensive `GROUP BY af.memberId` aggregation.
+
+    DEPLOYMENT NOTE:
+    The precomputed datasource (collection_contributors_leaderboard_copy_ds) is populated by 8
+    independent TYPE COPY pipes (collection_contributors_leaderboard_copy_<presetKey>.pipe, one per
+    presetKey), each appending its own rows tagged with a daily snapshotId rather than one pipe
+    replacing the whole table - see those pipes' DESCRIPTIONs for why (a single 16-variant copy job
+    stalled at zero progress repeatedly in production with no root cause found; splitting by
+    presetKey cuts each job's scan/group cost 8x). Because each pipe appends independently and a
+    day's 8 runs don't all complete at the same instant, the precomputed path always resolves to the
+    LATEST COMPLETE daily snapshot via `WHERE snapshotId = (SELECT max(snapshotId) FROM
+    collection_contributors_leaderboard_copy_ds)`, mirroring `leaderboards_copy_ds`'s established
+    pattern. A 2-day TTL on the datasource auto-drops stale snapshots. Initially, when none of the 8
+    pipes have run yet, requests without explicit presetKey will fall back to the live path
+    automatically. Once the copy jobs populate the datasource (Phase 2 complete), the frontend can
+    be updated to pass presetKey for collection-page requests, enabling the optimization. Until
+    then, all non-filtered requests use the live path (safe but not optimal).
+
+SQL >
+    %
+    {% if defined(presetKey) and not defined(repos) and not defined(platform) and not defined(activity_type) and not defined(activity_types) %}
+        {# Explicit presetKey passed and no filters - use precomputed path unconditionally #}
+        {% if Boolean(count, false) %}
+            SELECT any(totalContributorCount) AS count
+            FROM collection_contributors_leaderboard_copy_ds
+            WHERE
+                snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)
+                AND collectionSlug = {{ String(collectionSlug, required=True) }}
+                AND presetKey = {{ String(presetKey, required=True) }}
+                AND includeCollaborations = {{ Int32(Boolean(includeCollaborations, false), description="0 or 1") }}
+        {% else %}
+            SELECT id, avatar, displayName, githubHandleArray, contributionCount, contributionPercentage, roles
+            FROM collection_contributors_leaderboard_copy_ds
+            WHERE
+                snapshotId = (SELECT max(snapshotId) FROM collection_contributors_leaderboard_copy_ds)
+                AND collectionSlug = {{ String(collectionSlug, required=True) }}
+                AND presetKey = {{ String(presetKey, required=True) }}
+                AND includeCollaborations = {{ Int32(Boolean(includeCollaborations, false), description="0 or 1") }}
+                AND rank > {{ Int32(offset, 0) }}
+                AND rank <= {{ Int32(offset, 0) }} + {{ Int32(limit, 10) }}
+            ORDER BY rank ASC
+        {% end %}
+    {% else %}
+        {# Any other case (no explicit presetKey, or filters present) - use live path #}
+        SELECT *
+        FROM collection_contributors_leaderboard_live
     {% end %}
