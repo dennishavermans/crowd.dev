@@ -1,6 +1,6 @@
 import commandLineArgs from 'command-line-args'
 
-import { isEmail } from '@crowd/common'
+import { normalizeMemberIdentityValue } from '@crowd/common'
 import { pgpQx } from '@crowd/data-access-layer'
 import { getDbConnection } from '@crowd/data-access-layer/src/database'
 import { QueryExecutor } from '@crowd/data-access-layer/src/queryExecutor'
@@ -166,9 +166,9 @@ setImmediate(async () => {
     afterId = candidates[candidates.length - 1].id
 
     for (const row of candidates) {
-      const lowerValue = row.value.trim().toLowerCase()
+      const normalized = normalizeMemberIdentityValue(row.value)
 
-      if (isEmail(lowerValue) && lowerValue !== row.value) {
+      if (normalized !== row.value) {
         if (testRun) {
           log.info(
             {
@@ -176,19 +176,19 @@ setImmediate(async () => {
               platform: row.platform,
               type: row.type,
               from: row.value,
-              to: lowerValue,
+              to: normalized,
             },
             'Lowercasing email-shaped identity!',
           )
         }
 
         const { updatedCount, ar } = await qx.tx(async (tx) => {
-          const updatedCount = await lowercaseIdentityValue(tx, row.id, lowerValue)
+          const updatedCount = await lowercaseIdentityValue(tx, row.id, normalized)
           const ar = await rewriteActivityRelationUsernamesToLower(
             tx,
             row.memberId,
             row.platform,
-            lowerValue,
+            normalized,
           )
           return { updatedCount, ar }
         })
