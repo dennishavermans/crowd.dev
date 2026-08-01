@@ -193,98 +193,103 @@ async function rewriteActivityRelationUsernames(
 }
 
 setImmediate(async () => {
-  const testRun = parameters.testRun ?? false
-  const PROCESS_BATCH_LOG_EVERY = testRun ? 1 : 200
+  try {
+    const testRun = parameters.testRun ?? false
+    const PROCESS_BATCH_LOG_EVERY = testRun ? 1 : 200
 
-  const db = await getDbConnection({
-    host: DB_CONFIG.writeHost,
-    port: DB_CONFIG.port,
-    database: DB_CONFIG.database,
-    user: DB_CONFIG.username,
-    password: DB_CONFIG.password,
-  })
+    const db = await getDbConnection({
+      host: DB_CONFIG.writeHost,
+      port: DB_CONFIG.port,
+      database: DB_CONFIG.database,
+      user: DB_CONFIG.username,
+      password: DB_CONFIG.password,
+    })
 
-  const qx = pgpQx(db)
+    const qx = pgpQx(db)
 
-  log.info({ testRun }, 'Running Pass 1 same-member case-variant cleanup!')
+    log.info({ testRun }, 'Running Pass 1 same-member case-variant cleanup!')
 
-  const groups = await findDuplicateCaseVariantGroups(qx, testRun ? 10 : undefined)
-  log.info({ groupCount: groups.length }, 'Loaded same-member case-variant groups!')
+    const groups = await findDuplicateCaseVariantGroups(qx, testRun ? 10 : undefined)
+    log.info({ groupCount: groups.length }, 'Loaded same-member case-variant groups!')
 
-  let processed = 0
-  let softDeleted = 0
-  let skipped = 0
-  let arUsernameUpdated = 0
-  let arObjectUsernameUpdated = 0
+    let processed = 0
+    let softDeleted = 0
+    let skipped = 0
+    let arUsernameUpdated = 0
+    let arObjectUsernameUpdated = 0
 
-  for (const group of groups) {
-    const rows = await fetchGroupIdentities(qx, group)
+    for (const group of groups) {
+      const rows = await fetchGroupIdentities(qx, group)
 
-    if (rows.length < 2) {
-      skipped += 1
-    } else {
-      const keeper = pickKeeper(rows)
-      const toDeleteRows = rows.filter((r) => r.id !== keeper.id)
-      const toDeleteIds = toDeleteRows.map((r) => r.id)
-      const deletedValues = toDeleteRows.map((r) => r.value)
+      if (rows.length < 2) {
+        skipped += 1
+      } else {
+        const keeper = pickKeeper(rows)
+        const toDeleteRows = rows.filter((r) => r.id !== keeper.id)
+        const toDeleteIds = toDeleteRows.map((r) => r.id)
+        const deletedValues = toDeleteRows.map((r) => r.value)
 
-      if (testRun) {
-        log.info(
-          {
-            memberId: group.memberId,
-            platform: group.platform,
-            type: group.type,
-            keep: keeper.value,
-            softDelete: deletedValues,
-          },
-          'Soft-deleting case variants!',
-        )
-      }
+        if (testRun) {
+          log.info(
+            {
+              memberId: group.memberId,
+              platform: group.platform,
+              type: group.type,
+              keep: keeper.value,
+              softDelete: deletedValues,
+            },
+            'Soft-deleting case variants!',
+          )
+        }
 
-      const { deletedCount, ar } = await qx.tx(async (tx) => {
-        const deletedCount = await softDeleteIdentities(tx, toDeleteIds)
-        const ar = await rewriteActivityRelationUsernames(
-          tx,
-          group.memberId,
-          group.platform,
-          keeper.value,
-          deletedValues,
-        )
-        return { deletedCount, ar }
-      })
+        const { deletedCount, ar } = await qx.tx(async (tx) => {
+          const deletedCount = await softDeleteIdentities(tx, toDeleteIds)
+          const ar = await rewriteActivityRelationUsernames(
+            tx,
+            group.memberId,
+            group.platform,
+            keeper.value,
+            deletedValues,
+          )
+          return { deletedCount, ar }
+        })
 
-      softDeleted += deletedCount
-      arUsernameUpdated += ar.usernameRows
-      arObjectUsernameUpdated += ar.objectMemberUsernameRows
+        softDeleted += deletedCount
+        arUsernameUpdated += ar.usernameRows
+        arObjectUsernameUpdated += ar.objectMemberUsernameRows
 
-      processed += 1
+        processed += 1
 
-      if (processed % PROCESS_BATCH_LOG_EVERY === 0) {
-        log.info(
-          {
-            processed,
-            total: groups.length,
-            softDeleted,
-            skipped,
-            arUsernameUpdated,
-            arObjectUsernameUpdated,
-          },
-          'Progress!',
-        )
+        if (processed % PROCESS_BATCH_LOG_EVERY === 0) {
+          log.info(
+            {
+              processed,
+              total: groups.length,
+              softDeleted,
+              skipped,
+              arUsernameUpdated,
+              arObjectUsernameUpdated,
+            },
+            'Progress!',
+          )
+        }
       }
     }
+
+    log.info(
+      {
+        processed,
+        softDeleted,
+        skipped,
+        arUsernameUpdated,
+        arObjectUsernameUpdated,
+      },
+      'Done!',
+    )
+
+    process.exit(0)
+  } catch (err) {
+    log.error(err, 'Cleanup failed')
+    process.exit(1)
   }
-
-  log.info(
-    {
-      processed,
-      softDeleted,
-      skipped,
-      arUsernameUpdated,
-      arObjectUsernameUpdated,
-    },
-    'Done!',
-  )
-
-  process.exit(0)
 })
