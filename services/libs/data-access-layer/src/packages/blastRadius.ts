@@ -177,11 +177,8 @@ export async function getAnalysisDetail(
   )
 }
 
-// Advisory-cache lookup for submit: finds the most recent 'done' analysis for the
-// same (advisoryOsvId, packageName, ecosystem) triple completed within maxAgeDays,
-// so a submit can reuse it instead of starting a new Temporal workflow. packageName
-// uses IS NOT DISTINCT FROM since it's nullable (advisory-wide analyses have no
-// package) and NULL = NULL is never true in plain SQL equality.
+// Advisory-cache lookup for submit: most recent 'done' analysis within maxAgeDays.
+// packageName uses IS NOT DISTINCT FROM since it's nullable and NULL = NULL is never true.
 export async function getRecentDoneAnalysis(
   qx: QueryExecutor,
   input: { advisoryOsvId: string; packageName: string | null; ecosystem: string },

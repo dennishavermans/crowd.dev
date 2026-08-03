@@ -3,7 +3,6 @@ import type { Request, Response } from 'express'
 import { generateUUIDv4 } from '@crowd/common'
 import * as blastRadiusDal from '@crowd/data-access-layer/src/packages/blastRadius'
 import { QueryExecutor } from '@crowd/data-access-layer/src/queryExecutor'
-import { Client } from '@crowd/temporal'
 import { ITriggerBlastRadiusAnalysis, TemporalWorkflowId } from '@crowd/types'
 
 import { getPackagesQx } from '@/db/packagesDb'
@@ -19,27 +18,19 @@ import {
 import { blastRadiusJobBatchRequestSchema } from './blastRadiusBatch'
 
 // 2a bulk — submit multiple blast-radius analysis jobs in one request, one per
-// array entry. Same lifecycle as the single-job submit, just looped: each entry
-// gets its own analysisId, its own pending row, and its own Temporal workflow
-// start — unless a 'done' analysis for the same (advisoryId, package, ecosystem)
-// is still within the advisory cache window (see BLAST_RADIUS_CACHE_MAX_AGE_DAYS),
-// in which case that entry reuses the cached analysis instead. Unlike the
-// read-only batch endpoints (packages/advisories/contacts),
-// this multiplies workflow starts per request, so the batch size is capped much
-// lower (see MAX_BLAST_RADIUS_JOBS_PER_BATCH) and the route stays behind the same
-// strict blastRadiusRateLimiter as the single-job route.
-//
-// A per-job failure (e.g. workflow.start throwing) does not fail the whole
-// batch — that job's entry comes back status: 'failed' and the rest still
-// submit, matching the partial-result shape of the other batch endpoints.
+// array entry (each may hit the cache via getCachedJobEntry). Unlike the
+// read-only batch endpoints (packages/advisories/contacts), this multiplies
+// workflow starts per request, so the batch size is capped much lower (see
+// MAX_BLAST_RADIUS_JOBS_PER_BATCH) and the route stays behind the same strict
+// blastRadiusRateLimiter as the single-job route. A per-job failure does not
+// fail the whole batch — that job's entry comes back status: 'failed'.
 export async function submitBlastRadiusJobBatch(req: Request, res: Response): Promise<void> {
   const { jobs } = validateOrThrow(blastRadiusJobBatchRequestSchema, req.body)
 
   const qx = await getPackagesQx()
-  const packagesTemporal = await getPackagesTemporalClient()
 
   const results: BlastRadiusJobEntry[] = await Promise.all(
-    jobs.map((body) => submitOneJob(qx, packagesTemporal, body)),
+    jobs.map((body) => submitOneJob(qx, body)),
   )
 
   res.status(202).json({ results })
@@ -47,7 +38,6 @@ export async function submitBlastRadiusJobBatch(req: Request, res: Response): Pr
 
 async function submitOneJob(
   qx: QueryExecutor,
-  packagesTemporal: Client,
   body: BlastRadiusJobRequest,
 ): Promise<BlastRadiusJobEntry> {
   const jobPackage = body.package ?? null
@@ -62,9 +52,8 @@ async function submitOneJob(
   }
 
   try {
-    // Cache lookup is inside the try too — like createAnalysis/workflow.start below,
-    // a DB error here must resolve this job's entry as 'failed', not reject the whole
-    // batch's Promise.all and 500 every other job in it.
+    // Cache lookup is inside the try too, so a DB error here resolves this
+    // job's entry as 'failed' instead of rejecting the whole batch.
     const cached = await getCachedJobEntry(qx, {
       advisoryId: body.advisoryId,
       package: jobPackage,
@@ -78,6 +67,12 @@ async function submitOneJob(
     // Create the pending row synchronously, before starting the workflow — see the
     // same comment on submitBlastRadiusJob for why (avoids a poll-race 404).
     await blastRadiusDal.createAnalysis(qx, analysisInput)
+
+    // Acquired per job (inside the try), not once up front — getPackagesTemporalClient
+    // caches its connection in a module-level singleton, so this is cheap once
+    // connected, but a first-ever connection failure must fail this job's entry only,
+    // not reject the whole batch before any per-job try/catch is in play.
+    const packagesTemporal = await getPackagesTemporalClient()
 
     await packagesTemporal.workflow.start('analyzeBlastRadius', {
       taskQueue: 'blast-radius-worker',

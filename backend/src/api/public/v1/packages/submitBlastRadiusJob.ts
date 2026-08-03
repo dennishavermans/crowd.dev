@@ -14,12 +14,9 @@ import {
   toBlastRadiusJobEntry,
 } from './blastRadius'
 
-// 2a — submit a blast-radius analysis job. Always exactly one job per request.
-// Every submission gets a fresh analysisId and status pending, unless a 'done'
-// analysis for the same (advisoryId, package, ecosystem) is still within the
-// advisory cache window — see BLAST_RADIUS_CACHE_MAX_AGE_DAYS — in which case that
-// cached analysis is returned instead, with no new row and no workflow start.
-// force=true on the request skips this cache entirely.
+// 2a — submit a blast-radius analysis job. Always exactly one job per request,
+// unless getCachedJobEntry returns a hit — then that's returned instead, with
+// no new row and no workflow start.
 export async function submitBlastRadiusJob(req: Request, res: Response): Promise<void> {
   const body = validateOrThrow(blastRadiusJobRequestSchema, req.body)
 

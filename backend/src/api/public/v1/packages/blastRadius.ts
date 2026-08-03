@@ -13,10 +13,8 @@ export const SUPPORTED_BLAST_RADIUS_ECOSYSTEMS = ['npm'] as const
 // so it is NOT run through purlFieldSchema/normalizePurl like the other endpoints.
 const ADVISORY_ID_PATTERN = /^(GHSA-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}|CVE-\d{4}-\d{4,})$/
 
-// How recent a 'done' analysis for the same (advisoryId, package, ecosystem) has to
-// be for submit to reuse it instead of starting a new Temporal workflow — see
-// getRecentDoneAnalysis. Configurable via env so it can be tuned without a redeploy;
-// defaults to 1 day. force=true on the request always bypasses this cache.
+// How recent a 'done' analysis has to be for submit to reuse it instead of
+// starting a new workflow — see getCachedJobEntry. force=true bypasses this.
 const blastRadiusCacheMaxAgeDaysEnv = Number(process.env.AKRITES_BLAST_RADIUS_CACHE_MAX_AGE_DAYS)
 export const BLAST_RADIUS_CACHE_MAX_AGE_DAYS =
   Number.isSafeInteger(blastRadiusCacheMaxAgeDaysEnv) && blastRadiusCacheMaxAgeDaysEnv > 0
@@ -49,10 +47,8 @@ export interface BlastRadiusJobEntry {
   status: BlastRadiusJobStatus
 }
 
-// Builds the 2a response body. status defaults to 'pending' (a freshly submitted
-// job — see analyzeBlastRadius in packages_worker) but a cache hit passes the
-// cached analysis's own status (always 'done' — see getRecentDoneAnalysis) so the
-// caller doesn't need to poll a job that's already finished.
+// Builds the 2a response body. status defaults to 'pending', but a cache hit
+// passes 'done' so the caller doesn't need to poll a job that's already finished.
 export function toBlastRadiusJobEntry(params: {
   analysisId: string
   advisoryId: string
@@ -69,10 +65,8 @@ export function toBlastRadiusJobEntry(params: {
   }
 }
 
-// Shared by submitBlastRadiusJob and submitBlastRadiusJobBatch — looks up a
-// recent 'done' analysis for the same (advisoryId, package, ecosystem) and, if
-// found, builds the job entry for it. Returns null on a cache miss or when
-// force=true (which bypasses the cache entirely).
+// Shared by submitBlastRadiusJob and submitBlastRadiusJobBatch — returns the
+// cached job entry on a hit, or null on a cache miss or force=true.
 export async function getCachedJobEntry(
   qx: QueryExecutor,
   params: {
