@@ -22,6 +22,12 @@ const options = [
     description: 'Process one small batch (10 rows) with real writes, then stop.',
   },
   {
+    name: 'afterMemberId',
+    alias: 'a',
+    type: String,
+    description: 'Resume after this memberId (exclusive). Use the afterMemberId from the last batch log.',
+  },
+  {
     name: 'help',
     alias: 'h',
     type: Boolean,
@@ -115,22 +121,13 @@ function mapProfile(old: Record<string, any>) {
   return mapped
 }
 
-// Flat old cache: top-level `name`, no `basic_profile` (object or array-of-profiles).
-const FLAT_CACHE_SHAPE_SQL = `
-  (
-    (
-      jsonb_typeof(data) = 'object'
-      AND data ? 'name'
-      AND NOT (data ? 'basic_profile')
-    )
-    OR (
-      jsonb_typeof(data) = 'array'
-      AND jsonb_array_length(data) > 0
-      AND (data->0) ? 'name'
-      AND NOT ((data->0) ? 'basic_profile')
-    )
-  )
-`
+function isAlreadyNested(profiles: Record<string, any>[]): boolean {
+  return profiles.length > 0 && profiles.every((p) => p?.basic_profile && !p?.name)
+}
+
+function isFlatShape(profiles: Record<string, any>[]): boolean {
+  return profiles.length > 0 && profiles.every((p) => p?.name && !p?.basic_profile)
+}
 
 async function countRows(qx: QueryExecutor): Promise<number> {
   const row = await qx.selectOne(
@@ -139,7 +136,6 @@ async function countRows(qx: QueryExecutor): Promise<number> {
       FROM "memberEnrichmentCache"
       WHERE source = $(source)
         AND data IS NOT NULL
-        AND ${FLAT_CACHE_SHAPE_SQL}
     `,
     { source: SOURCE },
   )
@@ -150,69 +146,24 @@ async function fetchRows(
   qx: QueryExecutor,
   limit: number,
   afterMemberId?: string,
-): Promise<{
-  rows: Array<{ memberId: string; data: any }>
-  nextAfterMemberId?: string
-  exhausted: boolean
-}> {
-  // Index-first page via PK, then drop already-rewritten rows in SQL.
-  // Putting the jsonb predicate in the base WHERE causes a seq scan.
-  const scanLimit = Math.max(limit * 2, limit + 100)
-
-  const rows = await qx.select(
+): Promise<Array<{ memberId: string; data: any }>> {
+  // PK (memberId, source) index scan + data IS NOT NULL filter.
+  return qx.select(
     `
-      WITH candidates AS MATERIALIZED (
-        SELECT "memberId", data
-        FROM "memberEnrichmentCache"
-        WHERE source = $(source)
-          AND data IS NOT NULL
-          ${afterMemberId ? 'AND "memberId" > $(afterMemberId)' : ''}
-        ORDER BY "memberId"
-        LIMIT $(scanLimit)
-      ),
-      meta AS (
-        SELECT COUNT(*)::int AS "candidateCount", MAX("memberId") AS "pageLastMemberId"
-        FROM candidates
-      )
-      SELECT
-        f."memberId",
-        f.data,
-        m."candidateCount" AS "_candidateCount",
-        m."pageLastMemberId" AS "_pageLastMemberId"
-      FROM meta m
-      LEFT JOIN LATERAL (
-        SELECT c."memberId", c.data
-        FROM candidates c
-        WHERE ${FLAT_CACHE_SHAPE_SQL}
-        ORDER BY c."memberId"
-        LIMIT $(limit)
-      ) f ON true
+      SELECT "memberId", data
+      FROM "memberEnrichmentCache"
+      WHERE source = $(source)
+        AND data IS NOT NULL
+        ${afterMemberId ? 'AND "memberId" > $(afterMemberId)' : ''}
+      ORDER BY "memberId"
+      LIMIT $(limit)
     `,
     {
       source: SOURCE,
       limit,
-      scanLimit,
       afterMemberId,
     },
   )
-
-  const candidateCount = Number(rows[0]?._candidateCount ?? 0)
-  if (candidateCount === 0) {
-    return { rows: [], exhausted: true }
-  }
-
-  const pageLastMemberId = rows[0]._pageLastMemberId as string
-  const flatRows = rows
-    .filter((r) => r.memberId)
-    .map(({ memberId, data }) => ({ memberId, data }))
-
-  return {
-    rows: flatRows,
-    // Full flat page: resume after last flat. Partial/empty: advance past the whole candidate window.
-    nextAfterMemberId:
-      flatRows.length === limit ? flatRows[flatRows.length - 1].memberId : pageLastMemberId,
-    exhausted: false,
-  }
 }
 
 async function updateCacheData(qx: QueryExecutor, memberId: string, data: unknown): Promise<void> {
@@ -235,83 +186,116 @@ async function updateCacheData(qx: QueryExecutor, memberId: string, data: unknow
 
 setImmediate(async () => {
   if (parameters.help) {
-    log.info('Usage: pnpm run script:rewrite-crustdata-enrichment-cache [--testRun|-t]')
+    log.info(
+      'Usage: pnpm run script:rewrite-crustdata-enrichment-cache [--testRun|-t] [--afterMemberId|-a <uuid>]',
+    )
     process.exit(0)
   }
 
   const testRun = parameters.testRun ?? false
   const BATCH_SIZE = testRun ? 10 : 500
+  let afterMemberId: string | undefined = parameters.afterMemberId || undefined
 
-  const db = await getDbConnection({
-    host: DB_CONFIG.writeHost,
-    port: DB_CONFIG.port,
-    database: DB_CONFIG.database,
-    user: DB_CONFIG.username,
-    password: DB_CONFIG.password,
-  })
-  const qx = pgpQx(db)
+  try {
+    const db = await getDbConnection({
+      host: DB_CONFIG.writeHost,
+      port: DB_CONFIG.port,
+      database: DB_CONFIG.database,
+      user: DB_CONFIG.username,
+      password: DB_CONFIG.password,
+    })
+    const qx = pgpQx(db)
 
-  const total = await countRows(qx)
+    const total = await countRows(qx)
 
-  log.info(
-    { testRun, BATCH_SIZE, total },
-    'Rewriting crustdata enrichment cache to nested person_data shape!',
-  )
+    log.info(
+      { testRun, BATCH_SIZE, total, afterMemberId },
+      'Rewriting crustdata enrichment cache to nested person_data shape!',
+    )
 
-  let afterMemberId: string | undefined
-  let totalUpdated = 0
-  let batch = 0
-  let hasMore = true
+    let totalUpdated = 0
+    let totalSkipped = 0
+    let batch = 0
+    let hasMore = true
 
-  while (hasMore) {
-    const page = await fetchRows(qx, BATCH_SIZE, afterMemberId)
-    if (page.exhausted) {
-      hasMore = false
-    } else {
-      afterMemberId = page.nextAfterMemberId
-
-      if (page.rows.length > 0) {
+    while (hasMore) {
+      const rows = await fetchRows(qx, BATCH_SIZE, afterMemberId)
+      if (rows.length === 0) {
+        hasMore = false
+      } else {
         batch += 1
 
-        for (const chunk of chunkArray(page.rows, UPDATE_CONCURRENCY)) {
-          await Promise.all(
-            chunk.map(async (row) => {
-              const profiles = Array.isArray(row.data) ? row.data : [row.data]
+        // Process sequentially in testRun so we rewrite exactly BATCH_SIZE flat rows
+        // (and can stop mid-page). Full runs use concurrent chunks.
+        if (testRun) {
+          for (const row of rows) {
+            const profiles = Array.isArray(row.data) ? row.data : [row.data]
 
-              // Fail fast if a row is not the flat cache shape this script expects.
-              if (profiles.some((p) => !p?.name || p.basic_profile)) {
-                throw new Error(`Unexpected crustdata cache shape for member ${row.memberId}`)
-              }
-
+            if (isAlreadyNested(profiles)) {
+              totalSkipped += 1
+            } else if (!isFlatShape(profiles)) {
+              throw new Error(`Unexpected crustdata cache shape for member ${row.memberId}`)
+            } else {
               await updateCacheData(qx, row.memberId, profiles.map(mapProfile))
+              totalUpdated += 1
+              log.info({ memberId: row.memberId }, 'Updated crustdata cache row!')
+            }
 
-              if (testRun) {
-                log.info({ memberId: row.memberId }, 'Updated crustdata cache row!')
-              }
-            }),
-          )
-          totalUpdated += chunk.length
+            afterMemberId = row.memberId
+
+            if (totalUpdated >= BATCH_SIZE) {
+              break
+            }
+          }
+        } else {
+          for (const chunk of chunkArray(rows, UPDATE_CONCURRENCY)) {
+            const results = await Promise.all(
+              chunk.map(async (row) => {
+                const profiles = Array.isArray(row.data) ? row.data : [row.data]
+
+                if (isAlreadyNested(profiles)) {
+                  return 'skipped' as const
+                }
+
+                if (!isFlatShape(profiles)) {
+                  throw new Error(`Unexpected crustdata cache shape for member ${row.memberId}`)
+                }
+
+                await updateCacheData(qx, row.memberId, profiles.map(mapProfile))
+                return 'updated' as const
+              }),
+            )
+
+            totalUpdated += results.filter((r) => r === 'updated').length
+            totalSkipped += results.filter((r) => r === 'skipped').length
+          }
+
+          // Only advance the resume cursor after the batch fully succeeds.
+          afterMemberId = rows[rows.length - 1].memberId
         }
 
         log.info(
           {
             batch,
-            batchSize: page.rows.length,
+            batchSize: rows.length,
             totalUpdated,
+            totalSkipped,
             total,
             afterMemberId,
           },
           'Batch processed!',
         )
 
-        // testRun: one real-write batch, then stop.
-        if (testRun) {
+        if (testRun && totalUpdated >= BATCH_SIZE) {
           hasMore = false
         }
       }
     }
-  }
 
-  log.info({ totalUpdated, total, testRun }, 'Done!')
-  process.exit(0)
+    log.info({ totalUpdated, totalSkipped, total, afterMemberId, testRun }, 'Done!')
+    process.exit(0)
+  } catch (err) {
+    log.error({ err, afterMemberId }, 'Rewrite failed! Resume with --afterMemberId from this log.')
+    process.exit(1)
+  }
 })
