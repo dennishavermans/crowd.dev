@@ -2,10 +2,7 @@ import type { QueryExecutor } from '@crowd/data-access-layer/src/queryExecutor'
 
 import type { Credential } from './types'
 
-export async function getCredential(
-  qx: QueryExecutor,
-  integrationId: string,
-): Promise<Credential> {
+export async function getCredential(qx: QueryExecutor, integrationId: string): Promise<Credential> {
   const integration: { platform: string } | null = await qx.selectOneOrNone(
     `SELECT platform
      FROM integrations
@@ -34,9 +31,7 @@ function githubAppCredential(): Credential {
   const rawPrivateKey = process.env.CROWD_GITHUB_PRIVATE_KEY
 
   if (!appId || !rawPrivateKey) {
-    throw new Error(
-      'missing CROWD_GITHUB_APP_ID or CROWD_GITHUB_PRIVATE_KEY environment variables',
-    )
+    throw new Error('missing CROWD_GITHUB_APP_ID or CROWD_GITHUB_PRIVATE_KEY environment variables')
   }
 
   const privateKey = rawPrivateKey.startsWith('-----')
