@@ -1,4 +1,4 @@
-import { proxyActivities } from '@temporalio/workflow'
+import { log, proxyActivities } from '@temporalio/workflow'
 
 import type * as activities from '../activities/dispatcherActivities'
 
@@ -15,7 +15,11 @@ export async function dispatcher(): Promise<void> {
   const units = await activity.claimDue(CLAIM_LIMIT)
 
   for (const unit of units) {
-    await activity.startRun(unit)
-    await activity.reschedule(unit.id, unit.platform, unit.syncName)
+    try {
+      await activity.startRun(unit)
+      await activity.reschedule(unit.id, unit.platform, unit.syncName)
+    } catch (err) {
+      log.error('failed to dispatch sync unit', { unitId: unit.id, err })
+    }
   }
 }
