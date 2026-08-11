@@ -5,10 +5,17 @@ export interface Channel {
   channelName: string
 }
 
+export interface GithubAppCredentialData {
+  appId: string
+  privateKey: string
+}
+
+// POC only: single variant; becomes a discriminated union (token, oauth2, ...)
+// as more connectors land
 export interface Credential {
   platform: string
-  kind: 'github-app' | 'token'
-  data: Record<string, string>
+  kind: 'github-app'
+  data: GithubAppCredentialData
 }
 
 export interface SyncContext {
