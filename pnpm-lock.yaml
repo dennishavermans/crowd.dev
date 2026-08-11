@@ -608,6 +608,58 @@ importers:
         specifier: ^3.0.1
         version: 3.1.0
 
+  services/apps/connectors_worker:
+    dependencies:
+      '@crowd/archetype-standard':
+        specifier: workspace:*
+        version: link:../../archetypes/standard
+      '@crowd/archetype-worker':
+        specifier: workspace:*
+        version: link:../../archetypes/worker
+      '@crowd/common':
+        specifier: workspace:*
+        version: link:../../libs/common
+      '@crowd/connectors':
+        specifier: workspace:*
+        version: link:../../libs/connectors
+      '@crowd/data-access-layer':
+        specifier: workspace:*
+        version: link:../../libs/data-access-layer
+      '@crowd/logging':
+        specifier: workspace:*
+        version: link:../../libs/logging
+      '@crowd/redis':
+        specifier: workspace:*
+        version: link:../../libs/redis
+      '@crowd/temporal':
+        specifier: workspace:*
+        version: link:../../libs/temporal
+      '@crowd/types':
+        specifier: workspace:*
+        version: link:../../libs/types
+      '@temporalio/activity':
+        specifier: ~1.17.2
+        version: 1.17.2
+      '@temporalio/client':
+        specifier: ~1.17.2
+        version: 1.17.2
+      '@temporalio/workflow':
+        specifier: ~1.17.2
+        version: 1.17.2
+      tsx:
+        specifier: ^4.7.1
+        version: 4.7.3
+      typescript:
+        specifier: ^5.6.3
+        version: 5.6.3
+    devDependencies:
+      '@types/node':
+        specifier: ^20.8.2
+        version: 20.12.7
+      nodemon:
+        specifier: ^3.0.1
+        version: 3.1.0
+
   services/apps/cron_service:
     dependencies:
       '@aws-sdk/client-s3':
@@ -2227,6 +2279,28 @@ importers:
         specifier: ^5.6.3
         version: 5.6.3
 
+  services/libs/connectors:
+    dependencies:
+      '@crowd/common':
+        specifier: workspace:*
+        version: link:../common
+      '@crowd/data-access-layer':
+        specifier: workspace:*
+        version: link:../data-access-layer
+      '@crowd/logging':
+        specifier: workspace:*
+        version: link:../logging
+      zod:
+        specifier: ^3.22.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^20.8.2
+        version: 20.12.7
+      typescript:
+        specifier: ^5.6.3
+        version: 5.6.3
+
   services/libs/data-access-layer:
     dependencies:
       '@crowd/common':
@@ -2320,28 +2394,6 @@ importers:
       pg-promise:
         specifier: ^11.4.3
         version: 11.6.0
-    devDependencies:
-      '@types/node':
-        specifier: ^20.8.2
-        version: 20.12.7
-      typescript:
-        specifier: ^5.6.3
-        version: 5.6.3
-
-  services/libs/integration-builder:
-    dependencies:
-      '@crowd/common':
-        specifier: workspace:*
-        version: link:../common
-      '@crowd/data-access-layer':
-        specifier: workspace:*
-        version: link:../data-access-layer
-      '@crowd/logging':
-        specifier: workspace:*
-        version: link:../logging
-      zod:
-        specifier: ^3.22.0
-        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^20.8.2
