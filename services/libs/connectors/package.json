@@ -1,5 +1,5 @@
 {
-  "name": "@crowd/integration-builder",
+  "name": "@crowd/connectors",
   "private": true,
   "main": "src/index.ts",
   "scripts": {
