@@ -41,12 +41,17 @@ export async function claimDueUnits(qx: QueryExecutor, limit: number): Promise<I
     `UPDATE integration.sync_units su
      SET "lockedAt" = now(), "updatedAt" = now()
      WHERE su.id IN (
-       SELECT id
-       FROM integration.sync_units
-       WHERE status = 'active'
-         AND "nextRunAt" <= now()
-         AND ("lockedAt" IS NULL OR "lockedAt" < now() - $(leaseMinutes) * interval '1 minute')
-       ORDER BY "nextRunAt"
+       SELECT su2.id
+       FROM integration.sync_units su2
+       WHERE su2.status = 'active'
+         AND su2."nextRunAt" <= now()
+         AND (su2."lockedAt" IS NULL OR su2."lockedAt" < now() - $(leaseMinutes) * interval '1 minute')
+         AND EXISTS (
+           SELECT 1
+           FROM public.integrations i
+           WHERE i.id = su2."integrationId" AND i."deletedAt" IS NULL
+         )
+       ORDER BY su2."nextRunAt"
        LIMIT $(limit)
        FOR UPDATE SKIP LOCKED
      )
