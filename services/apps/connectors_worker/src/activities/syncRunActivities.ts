@@ -64,6 +64,7 @@ export async function executeSync(unitId: string): Promise<void> {
     // POC only: everything unclassified is framework.internal; the 7-class
     // error taxonomy arrives with the M2 HTTP client
     await recordRunFailure(qx, unitId, 'framework.internal', DEAD_LETTER_AFTER)
+    throw err
   } finally {
     clearInterval(heartbeat)
   }
