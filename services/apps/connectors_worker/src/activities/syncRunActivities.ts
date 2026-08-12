@@ -48,7 +48,13 @@ export async function executeSync(unitId: string): Promise<void> {
     log,
   }
 
-  const heartbeat = setInterval(() => activityContext.heartbeat(), HEARTBEAT_INTERVAL_MS)
+  const heartbeat = setInterval(() => {
+    try {
+      activityContext.heartbeat()
+    } catch (err) {
+      log.warn({ errMsg: (err as Error).message }, 'heartbeat failed')
+    }
+  }, HEARTBEAT_INTERVAL_MS)
 
   try {
     const sync = getSync(unit.platform, unit.syncName)
