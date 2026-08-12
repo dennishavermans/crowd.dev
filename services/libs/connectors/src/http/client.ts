@@ -123,9 +123,7 @@ async function send<T>(
 
 function applyBearerToken(config: AxiosRequestConfig, token: IPooledToken): AxiosRequestConfig {
   const headers = AxiosHeaders.from(config.headers)
-  if (!headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token.value}`)
-  }
+  headers.set('Authorization', `Bearer ${token.value}`)
   return { ...config, headers }
 }
 
