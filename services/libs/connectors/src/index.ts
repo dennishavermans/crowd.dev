@@ -1,3 +1,5 @@
 export * from './credentials'
+export * from './http/client'
+export * from './http/errors'
 export * from './registry'
 export * from './types'
