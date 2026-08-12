@@ -1,6 +1,6 @@
 import type { QueryExecutor } from '../queryExecutor'
 
-import type { ISyncRunSuccess, ISyncUnit, SyncUnitUpsert } from './types'
+import type { IClaimedUnit, ISyncRunSuccess, ISyncUnit, SyncUnitUpsert } from './types'
 
 const MIN_INITIAL_DELAY_SECONDS = 10
 const MAX_INITIAL_DELAY_SECONDS = 900
@@ -36,7 +36,7 @@ export async function upsertSyncUnits(qx: QueryExecutor, units: SyncUnitUpsert[]
   )
 }
 
-export async function claimDueUnits(qx: QueryExecutor, limit: number): Promise<ISyncUnit[]> {
+export async function claimDueUnits(qx: QueryExecutor, limit: number): Promise<IClaimedUnit[]> {
   return qx.select(
     `UPDATE integration.sync_units su
      SET "lockedAt" = now(), "updatedAt" = now()
@@ -55,7 +55,7 @@ export async function claimDueUnits(qx: QueryExecutor, limit: number): Promise<I
        LIMIT $(limit)
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING su.*`,
+     RETURNING su.id, su."integrationId", su.platform, su."syncName"`,
     { limit, leaseMinutes: CLAIM_LEASE_MINUTES },
   )
 }

@@ -42,6 +42,7 @@ export interface ConnectorHttp {
 const MAX_ATTEMPTS = 3
 const BACKOFF_BASE_MS = 1000
 const RATE_LIMIT_FALLBACK_MS = 60_000
+const DEFAULT_TIMEOUT_MS = 60_000
 
 export function createHttpClient(deps: HttpClientDeps): ConnectorHttp {
   return {
@@ -115,7 +116,11 @@ async function send<T>(
 ): Promise<AxiosResponse<T>> {
   const applyToken = deps.applyToken ?? applyBearerToken
   try {
-    return await axios.request<T>({ ...applyToken(config, token), validateStatus: () => true })
+    return await axios.request<T>({
+      timeout: DEFAULT_TIMEOUT_MS,
+      ...applyToken(config, token),
+      validateStatus: () => true,
+    })
   } catch (err) {
     throw new ProviderUnavailableError('no response from provider', { cause: err })
   }

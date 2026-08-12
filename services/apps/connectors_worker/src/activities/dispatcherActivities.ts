@@ -1,6 +1,6 @@
 import { getSync } from '@crowd/connectors'
 import { claimDueUnits, rescheduleUnit } from '@crowd/data-access-layer/src/connectors'
-import type { ISyncUnit } from '@crowd/data-access-layer/src/connectors'
+import type { IClaimedUnit } from '@crowd/data-access-layer/src/connectors'
 import { dbStoreQx } from '@crowd/data-access-layer/src/queryExecutor'
 import { RedisCache } from '@crowd/redis'
 import { WorkflowIdConflictPolicy, WorkflowIdReusePolicy } from '@crowd/temporal'
@@ -12,11 +12,11 @@ const TASK_QUEUE = 'connectors'
 const HEARTBEAT_TTL_SECONDS = 300
 const CADENCE_JITTER_RATIO = 0.1
 
-export async function claimDue(limit: number): Promise<ISyncUnit[]> {
+export async function claimDue(limit: number): Promise<IClaimedUnit[]> {
   return claimDueUnits(dbStoreQx(svc.postgres.writer), limit)
 }
 
-export async function startRun(unit: ISyncUnit): Promise<StartRunResult> {
+export async function startRun(unit: IClaimedUnit): Promise<StartRunResult> {
   try {
     await svc.temporal.workflow.start('syncRun', {
       taskQueue: TASK_QUEUE,
