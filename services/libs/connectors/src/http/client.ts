@@ -155,10 +155,7 @@ function isRateLimited(status: number, headers: Record<string, string>): boolean
   if (status === 429) {
     return true
   }
-  if (status === 403 && headers['x-ratelimit-remaining'] === '0') {
-    return true
-  }
-  return 'retry-after' in headers
+  return status === 403 && headers['x-ratelimit-remaining'] === '0'
 }
 
 function computeResumeAt(headers: Record<string, string>): Date {
