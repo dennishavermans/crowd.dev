@@ -3,27 +3,58 @@ import type { RedisClient } from '@crowd/redis'
 import type { IPooledToken } from '../http/client'
 import { ProviderAuthError, RateLimitError } from '../http/errors'
 
-interface ITokenState {
-  value: string
-  parkedUntil?: string
-  quarantined?: boolean
+const PROBE_STALENESS_MS = 90_000
+
+export interface BudgetSnapshot {
+  limit: number
+  remaining: number
+  resetAt: Date
+}
+
+export type BudgetProbe = (
+  platform: string,
+  connectionId: string,
+  tokenId: string,
+) => Promise<BudgetSnapshot | null>
+
+// POC only: the probe is the single source of truth for budgets (github /rate_limit is free and
+// limits are per installation token); budgets for other platforms are a later decision.
+export interface TokenPoolOptions {
+  probeBudget?: BudgetProbe
 }
 
 export interface TokenPool {
   acquire(): Promise<IPooledToken>
+  hasHeadroom(estimate: number): Promise<boolean>
   park(tokenId: string, resumeAt: Date): Promise<void>
   quarantine(tokenId: string): Promise<void>
   seed(tokenId: string, value: string): Promise<void>
   earliestResumeAt(): Promise<Date | null>
 }
 
+interface ITokenState {
+  value: string
+  parkedUntil?: string
+  quarantined?: boolean
+}
+
+interface IBucket {
+  limit: number
+  remaining: number
+  resetAtMs: number
+  probedAtMs: number
+}
+
 export function createTokenPool(
   redis: RedisClient,
   platform: string,
   connectionId: string,
+  options?: TokenPoolOptions,
 ): TokenPool {
   const tokensKey = `connectors:pool:${platform}:${connectionId}:tokens`
   const lruKey = `connectors:pool:${platform}:${connectionId}:lru`
+  const bucketKey = (tokenId: string) =>
+    `connectors:pool:${platform}:${connectionId}:budget:${tokenId}`
 
   async function readStates(): Promise<Map<string, ITokenState>> {
     const raw = await redis.hGetAll(tokensKey)
@@ -72,23 +103,115 @@ export function createTokenPool(
     await redis.hSet(tokensKey, tokenId, JSON.stringify({ ...state, ...update }))
   }
 
+  async function readBucket(tokenId: string): Promise<IBucket | null> {
+    const raw = await redis.hGetAll(bucketKey(tokenId))
+    if (!raw.probedAt) {
+      return null
+    }
+    return {
+      limit: Number(raw.limit),
+      remaining: Number(raw.remaining),
+      resetAtMs: Number(raw.resetAt),
+      probedAtMs: Number(raw.probedAt),
+    }
+  }
+
+  function needsProbe(bucket: IBucket | null, nowMs: number): boolean {
+    return !bucket || nowMs - bucket.probedAtMs > PROBE_STALENESS_MS || nowMs >= bucket.resetAtMs
+  }
+
+  async function loadBucket(
+    probe: BudgetProbe,
+    tokenId: string,
+    nowMs: number,
+  ): Promise<IBucket | null> {
+    const bucket = await readBucket(tokenId)
+    if (!needsProbe(bucket, nowMs)) {
+      return bucket
+    }
+    const snapshot = await probe(platform, connectionId, tokenId)
+    if (!snapshot) {
+      return null
+    }
+    const probed = {
+      limit: snapshot.limit,
+      remaining: snapshot.remaining,
+      resetAtMs: snapshot.resetAt.getTime(),
+      probedAtMs: nowMs,
+    }
+    await redis.hSet(bucketKey(tokenId), {
+      limit: String(probed.limit),
+      remaining: String(probed.remaining),
+      resetAt: String(probed.resetAtMs),
+      probedAt: String(probed.probedAtMs),
+    })
+    return probed
+  }
+
   return {
     async acquire(): Promise<IPooledToken> {
       const nowMs = Date.now()
       const states = await readStates()
       const ordered = await redis.zRange(lruKey, 0, -1)
+      const probe = options?.probeBudget
+      let earliestBudgetResetAt: Date | null = null
       for (const id of ordered) {
         const state = states.get(id)
-        if (state && isHealthy(state, nowMs)) {
-          await redis.zAdd(lruKey, { score: nowMs, value: id })
-          return { id, value: state.value }
+        if (!state || !isHealthy(state, nowMs)) {
+          continue
         }
+        if (probe) {
+          const bucket = await loadBucket(probe, id, nowMs)
+          if (bucket && bucket.remaining <= 0) {
+            const resetAt = new Date(bucket.resetAtMs)
+            if (!earliestBudgetResetAt || resetAt < earliestBudgetResetAt) {
+              earliestBudgetResetAt = resetAt
+            }
+            continue
+          }
+          if (bucket) {
+            await redis.hIncrBy(bucketKey(id), 'remaining', -1)
+          }
+        }
+        await redis.zAdd(lruKey, { score: nowMs, value: id })
+        return { id, value: state.value }
       }
-      const resumeAt = earliestParkedUntil(states, nowMs)
+      const parkedResumeAt = earliestParkedUntil(states, nowMs)
+      const resumeAt =
+        parkedResumeAt && earliestBudgetResetAt
+          ? new Date(Math.min(parkedResumeAt.getTime(), earliestBudgetResetAt.getTime()))
+          : (parkedResumeAt ?? earliestBudgetResetAt)
       if (resumeAt) {
         throw new RateLimitError('token pool exhausted', { resumeAt })
       }
       throw new ProviderAuthError('token pool empty')
+    },
+
+    async hasHeadroom(estimate: number): Promise<boolean> {
+      const probe = options?.probeBudget
+      if (!probe) {
+        return true
+      }
+      const nowMs = Date.now()
+      const states = await readStates()
+      if (states.size === 0) {
+        return true
+      }
+      let pooledRemaining = 0
+      for (const [id, state] of states.entries()) {
+        if (!isHealthy(state, nowMs)) {
+          continue
+        }
+        const bucket = await loadBucket(probe, id, nowMs)
+        if (!bucket) {
+          return true
+        }
+        pooledRemaining += bucket.remaining
+        if (pooledRemaining >= estimate) {
+          return true
+        }
+      }
+      return false
     },
 
     async park(tokenId: string, resumeAt: Date): Promise<void> {

@@ -14,12 +14,18 @@ export async function dispatcher(): Promise<void> {
 
   const units = await activity.claimDue(CLAIM_LIMIT)
 
-  for (const unit of units) {
+  const { admitted, deferred } = await activity.admitByBudget(units)
+
+  for (const unit of admitted) {
     try {
       await activity.startRun(unit)
       await activity.reschedule(unit.id, unit.platform, unit.syncName)
     } catch (err) {
       log.error('failed to dispatch sync unit', { unitId: unit.id, err })
     }
+  }
+
+  for (const unit of deferred) {
+    await activity.deferUnit(unit.id)
   }
 }

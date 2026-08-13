@@ -1,4 +1,11 @@
-import { claimDue, reschedule, startRun, touchHeartbeat } from './activities/dispatcherActivities'
+import {
+  admitByBudget,
+  claimDue,
+  deferUnit,
+  reschedule,
+  startRun,
+  touchHeartbeat,
+} from './activities/dispatcherActivities'
 import { executeSync } from './activities/syncRunActivities'
 
-export { claimDue, executeSync, reschedule, startRun, touchHeartbeat }
+export { admitByBudget, claimDue, deferUnit, executeSync, reschedule, startRun, touchHeartbeat }
