@@ -27,6 +27,12 @@ const BATCH_SIZE = 500
 const IDENTITY_CONCURRENCY = 5
 const DEFAULT_AFTER_MEMBER_ID = '00000000-0000-0000-0000-000000000000'
 
+const SYSTEM_IDENTITY_VALUES = new Set(['noreply@github.com', 'noreply@example.com'])
+
+function isSystemIdentity(value: string) {
+  return SYSTEM_IDENTITY_VALUES.has(value.toLowerCase())
+}
+
 const options = [
   {
     name: 'testRun',
@@ -289,6 +295,7 @@ async function consolidateDuplicateIdentity(
       return null
     }
 
+    const skipActivityMoves = isSystemIdentity(identity.value)
     const singleIdentityMembers = members.filter((member) => member.onlyIdentity)
     const unmergeSources = members.filter((member) => member.canUnmergeFrom)
 
@@ -298,7 +305,7 @@ async function consolidateDuplicateIdentity(
 
     if (singleIdentityMembers.length > 0) {
       targetMemberId = pickOldestMember(singleIdentityMembers).memberId
-    } else if (unmergeSources.length > 0) {
+    } else if (!skipActivityMoves && unmergeSources.length > 0) {
       const source = pickOldestMember(unmergeSources)
       const preview = await prepareMemberUnmerge(tx, source.memberId, source.identityId)
       unmergeResult = await unmergeMember(tx, source.memberId, preview)
@@ -316,6 +323,7 @@ async function consolidateDuplicateIdentity(
       allMemberIds: members.map((member) => member.memberId),
       targetMemberId,
       unmergeResult,
+      skipActivityMoves,
       duplicates,
       singleIdentityDuplicateIds: duplicates
         .filter((member) => member.onlyIdentity)
@@ -340,13 +348,15 @@ async function consolidateDuplicateIdentity(
     })
   }
 
-  await reassignDuplicateMemberActivities(
-    qx,
-    plan.targetMemberId,
-    plan.singleIdentityDuplicateIds,
-    plan.multiIdentityDuplicates,
-    identity.platform,
-  )
+  if (!plan.skipActivityMoves) {
+    await reassignDuplicateMemberActivities(
+      qx,
+      plan.targetMemberId,
+      plan.singleIdentityDuplicateIds,
+      plan.multiIdentityDuplicates,
+      identity.platform,
+    )
+  }
 
   await qx.tx(async (tx) => {
     const duplicateMemberIds = plan.duplicates.map((member) => member.memberId)
@@ -410,6 +420,7 @@ async function consolidateDuplicateIdentity(
       value: identity.value,
       targetMemberId: plan.targetMemberId,
       createdByUnmerge: Boolean(plan.unmergeResult),
+      skipActivityMoves: plan.skipActivityMoves,
       duplicateCount: plan.duplicates.length,
     },
     'Consolidated duplicate unverified identity',
