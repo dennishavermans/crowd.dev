@@ -166,7 +166,23 @@ async function fetchIdentityHolders(
               AND other.type = $(type)
               AND lower(other.value) = lower($(value))
             )
-        ) AS "onlyIdentity"
+        ) AS "onlyIdentity",
+        EXISTS (
+          SELECT 1
+          FROM "memberIdentities" other
+          WHERE other."memberId" = mi."memberId"
+            AND other."deletedAt" IS NULL
+            AND CASE
+              WHEN $(type) = 'email' THEN
+                NOT (other.type = 'email' AND lower(other.value) = lower($(value)))
+              ELSE
+                NOT (
+                  other.platform = $(platform)
+                  AND other.type = $(type)
+                  AND lower(other.value) = lower($(value))
+                )
+            END
+        ) AS "canUnmergeFrom"
       FROM "memberIdentities" mi
       JOIN members m ON m.id = mi."memberId"
       WHERE mi."deletedAt" IS NULL
@@ -183,6 +199,7 @@ async function fetchIdentityHolders(
       value: string
       memberCreatedAt: Date
       onlyIdentity: boolean
+      canUnmergeFrom: boolean
     }[]
   >
 }
@@ -308,7 +325,7 @@ async function consolidateDuplicateIdentity(
     }
 
     const singleIdentityMembers = members.filter((member) => member.onlyIdentity)
-    const multiIdentityMembers = members.filter((member) => !member.onlyIdentity)
+    const unmergeSources = members.filter((member) => member.canUnmergeFrom)
 
     let targetMemberId: string
     let unmergeSourceMemberId: string | null = null
@@ -316,14 +333,14 @@ async function consolidateDuplicateIdentity(
 
     if (singleIdentityMembers.length > 0) {
       targetMemberId = pickOldestMember(singleIdentityMembers).memberId
-    } else if (multiIdentityMembers.length === 0) {
-      return null
-    } else {
-      const source = pickOldestMember(multiIdentityMembers)
+    } else if (unmergeSources.length > 0) {
+      const source = pickOldestMember(unmergeSources)
       const preview = await prepareMemberUnmerge(tx, source.memberId, source.identityId)
       unmergeResult = await unmergeMember(tx, source.memberId, preview)
       targetMemberId = unmergeResult.secondary.id
       unmergeSourceMemberId = source.memberId
+    } else {
+      targetMemberId = pickOldestMember(members).memberId
     }
 
     const duplicates = members.filter(
