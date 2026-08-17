@@ -6,7 +6,12 @@ import {
   startMemberUnmergeWorkflow,
   unmergeMember,
 } from '@crowd/common_services'
-import { QueryExecutor, pgpQx } from '@crowd/data-access-layer'
+import {
+  QueryExecutor,
+  moveActivityRelationsToAnotherMember,
+  moveActivityRelationsWithIdentityToAnotherMember,
+  pgpQx,
+} from '@crowd/data-access-layer'
 import { getDbConnection } from '@crowd/data-access-layer/src/database'
 import { chunkArray } from '@crowd/data-access-layer/src/old/apps/merge_suggestions_worker/utils'
 import { getServiceLogger } from '@crowd/logging'
@@ -19,7 +24,7 @@ const log = getServiceLogger()
 
 const TEST_RUN_BATCH_SIZE = 10
 const BATCH_SIZE = 500
-const IDENTITY_CONCURRENCY = 50
+const IDENTITY_CONCURRENCY = 5
 const DEFAULT_AFTER_MEMBER_ID = '00000000-0000-0000-0000-000000000000'
 
 const options = [
@@ -33,7 +38,8 @@ const options = [
     name: 'afterMemberId',
     alias: 'a',
     type: String,
-    description: 'Resume after this member ID (exclusive).',
+    description:
+      'Resume from this member ID (exclusive). Use the afterMemberId from the failure log.',
   },
   {
     name: 'help',
@@ -47,7 +53,7 @@ const usage = commandLineUsage([
   {
     header: 'Fix duplicate unverified identities',
     content:
-      'Consolidate duplicate unverified member identities onto one member per identity. One batch per run.',
+      'Consolidate duplicate unverified member identities onto one member per identity. Loops batches until done. Use --afterMemberId to resume after a failure.',
   },
   {
     header: 'Options',
@@ -204,67 +210,26 @@ async function fetchIdentityHolders(
   >
 }
 
-async function reassignMemberActivities(
+async function reassignDuplicateMemberActivities(
   qx: QueryExecutor,
-  memberIds: string[],
   targetMemberId: string,
+  singleIdentityMemberIds: string[],
+  multiIdentityMembers: { memberId: string; value: string }[],
+  platform: string,
 ) {
-  if (memberIds.length === 0) {
-    return
+  for (const memberId of singleIdentityMemberIds) {
+    await moveActivityRelationsToAnotherMember(qx, memberId, targetMemberId)
   }
 
-  await qx.result(
-    `
-      UPDATE "activityRelations"
-      SET "memberId" = $(targetMemberId),
-          "updatedAt" = NOW()
-      WHERE "memberId" IN ($(memberIds:csv))
-    `,
-    { targetMemberId, memberIds },
-  )
-  await qx.result(
-    `
-      UPDATE "activityRelations"
-      SET "objectMemberId" = $(targetMemberId),
-          "updatedAt" = NOW()
-      WHERE "objectMemberId" IN ($(memberIds:csv))
-    `,
-    { targetMemberId, memberIds },
-  )
-}
-
-async function reassignIdentityActivities(
-  qx: QueryExecutor,
-  memberIds: string[],
-  targetMemberId: string,
-  identity: { platform: string; value: string },
-) {
-  if (memberIds.length === 0) {
-    return
+  for (const member of multiIdentityMembers) {
+    await moveActivityRelationsWithIdentityToAnotherMember(
+      qx,
+      member.memberId,
+      targetMemberId,
+      member.value,
+      platform,
+    )
   }
-
-  await qx.result(
-    `
-      UPDATE "activityRelations"
-      SET "memberId" = $(targetMemberId),
-          "updatedAt" = NOW()
-      WHERE "memberId" IN ($(memberIds:csv))
-        AND platform = $(platform)
-        AND lower(username) = lower($(value))
-    `,
-    { targetMemberId, memberIds, platform: identity.platform, value: identity.value },
-  )
-  await qx.result(
-    `
-      UPDATE "activityRelations"
-      SET "objectMemberId" = $(targetMemberId),
-          "updatedAt" = NOW()
-      WHERE "objectMemberId" IN ($(memberIds:csv))
-        AND platform = $(platform)
-        AND lower("objectMemberUsername") = lower($(value))
-    `,
-    { targetMemberId, memberIds, platform: identity.platform, value: identity.value },
-  )
 }
 
 async function deleteMergeSuggestionsForMembers(qx: QueryExecutor, memberIds: string[]) {
@@ -318,7 +283,7 @@ async function consolidateDuplicateIdentity(
   temporal: TemporalClient,
   identity: { platform: string; type: MemberIdentityType; value: string },
 ) {
-  const unmerge = await qx.tx(async (tx) => {
+  const plan = await qx.tx(async (tx) => {
     const members = await fetchIdentityHolders(tx, identity)
     if (members.length <= 1) {
       return null
@@ -346,16 +311,45 @@ async function consolidateDuplicateIdentity(
     const duplicates = members.filter(
       (member) => member.memberId !== targetMemberId && member.memberId !== unmergeSourceMemberId,
     )
-    const duplicateMemberIds = duplicates.map((member) => member.memberId)
-    const singleIdentityDuplicateIds = duplicates
-      .filter((member) => member.onlyIdentity)
-      .map((member) => member.memberId)
-    const multiIdentityDuplicateIds = duplicates
-      .filter((member) => !member.onlyIdentity)
-      .map((member) => member.memberId)
 
-    await reassignMemberActivities(tx, singleIdentityDuplicateIds, targetMemberId)
-    await reassignIdentityActivities(tx, multiIdentityDuplicateIds, targetMemberId, identity)
+    return {
+      allMemberIds: members.map((member) => member.memberId),
+      targetMemberId,
+      unmergeResult,
+      duplicates,
+      singleIdentityDuplicateIds: duplicates
+        .filter((member) => member.onlyIdentity)
+        .map((member) => member.memberId),
+      multiIdentityDuplicates: duplicates
+        .filter((member) => !member.onlyIdentity)
+        .map((member) => ({ memberId: member.memberId, value: member.value })),
+    }
+  })
+
+  if (!plan) {
+    return
+  }
+
+  if (plan.unmergeResult) {
+    await startMemberUnmergeWorkflow(temporal, {
+      primaryId: plan.unmergeResult.primary.id,
+      secondaryId: plan.unmergeResult.secondary.id,
+      movedIdentities: plan.unmergeResult.movedIdentities,
+      primaryDisplayName: plan.unmergeResult.primary.displayName,
+      secondaryDisplayName: plan.unmergeResult.secondary.displayName,
+    })
+  }
+
+  await reassignDuplicateMemberActivities(
+    qx,
+    plan.targetMemberId,
+    plan.singleIdentityDuplicateIds,
+    plan.multiIdentityDuplicates,
+    identity.platform,
+  )
+
+  await qx.tx(async (tx) => {
+    const duplicateMemberIds = plan.duplicates.map((member) => member.memberId)
 
     if (duplicateMemberIds.length > 0) {
       await tx.result(
@@ -366,6 +360,7 @@ async function consolidateDuplicateIdentity(
             AND platform = $(platform)
             AND type = $(type)
             AND lower(value) = lower($(value))
+            AND verified = false
             AND "deletedAt" IS NULL
         `,
         {
@@ -377,7 +372,7 @@ async function consolidateDuplicateIdentity(
       )
     }
 
-    if (singleIdentityDuplicateIds.length > 0) {
+    if (plan.singleIdentityDuplicateIds.length > 0) {
       await tx.result(
         `
           UPDATE "memberOrganizations"
@@ -385,17 +380,17 @@ async function consolidateDuplicateIdentity(
           WHERE "memberId" IN ($(memberIds:csv))
             AND "deletedAt" IS NULL
         `,
-        { memberIds: singleIdentityDuplicateIds },
+        { memberIds: plan.singleIdentityDuplicateIds },
       )
-      await deleteMergeSuggestionsForMembers(tx, singleIdentityDuplicateIds)
+      await deleteMergeSuggestionsForMembers(tx, plan.singleIdentityDuplicateIds)
     }
 
-    await deleteMergeSuggestionsBetweenMembers(
-      tx,
-      members.map((member) => member.memberId),
-    )
+    await deleteMergeSuggestionsBetweenMembers(tx, plan.allMemberIds)
 
-    const membersToTouch = [...multiIdentityDuplicateIds, targetMemberId]
+    const membersToTouch = [
+      ...plan.multiIdentityDuplicates.map((member) => member.memberId),
+      plan.targetMemberId,
+    ]
     if (membersToTouch.length > 0) {
       await tx.result(
         `
@@ -406,39 +401,25 @@ async function consolidateDuplicateIdentity(
         { memberIds: membersToTouch },
       )
     }
-
-    log.info(
-      {
-        platform: identity.platform,
-        type: identity.type,
-        value: identity.value,
-        targetMemberId,
-        createdByUnmerge: Boolean(unmergeResult),
-        duplicateCount: duplicates.length,
-      },
-      'Consolidated duplicate unverified identity',
-    )
-
-    return unmergeResult
   })
 
-  if (!unmerge) {
-    return
-  }
-
-  await startMemberUnmergeWorkflow(temporal, {
-    primaryId: unmerge.primary.id,
-    secondaryId: unmerge.secondary.id,
-    movedIdentities: unmerge.movedIdentities,
-    primaryDisplayName: unmerge.primary.displayName,
-    secondaryDisplayName: unmerge.secondary.displayName,
-  })
+  log.info(
+    {
+      platform: identity.platform,
+      type: identity.type,
+      value: identity.value,
+      targetMemberId: plan.targetMemberId,
+      createdByUnmerge: Boolean(plan.unmergeResult),
+      duplicateCount: plan.duplicates.length,
+    },
+    'Consolidated duplicate unverified identity',
+  )
 }
 
 setImmediate(async () => {
   const testRun = parameters.testRun ?? false
   const batchSize = testRun ? TEST_RUN_BATCH_SIZE : BATCH_SIZE
-  const afterMemberId = parameters.afterMemberId ?? DEFAULT_AFTER_MEMBER_ID
+  let afterMemberId = parameters.afterMemberId ?? DEFAULT_AFTER_MEMBER_ID
 
   try {
     const db = await getDbConnection({
@@ -453,49 +434,64 @@ setImmediate(async () => {
 
     log.info({ testRun, batchSize, afterMemberId }, 'Running script')
 
-    const memberIds = await fetchMembersWithDuplicateUnverifiedIdentities(
-      qx,
-      afterMemberId,
-      batchSize,
-    )
+    let hasMore = true
+    while (hasMore) {
+      const batchAfterMemberId = afterMemberId
+      const memberIds = await fetchMembersWithDuplicateUnverifiedIdentities(
+        qx,
+        batchAfterMemberId,
+        batchSize,
+      )
 
-    if (memberIds.length === 0) {
-      log.info('No members with duplicate unverified identities found')
-      process.exit(0)
-    }
+      if (memberIds.length === 0) {
+        log.info(
+          { afterMemberId: batchAfterMemberId },
+          'No more members with duplicate unverified identities found',
+        )
+        break
+      }
 
-    const identities = await fetchDuplicateIdentitiesForMembers(qx, memberIds)
+      const identities = await fetchDuplicateIdentitiesForMembers(qx, memberIds)
 
-    log.info(
-      { memberCount: memberIds.length, identityCount: identities.length },
-      'Fetched duplicate unverified identities for batch',
-    )
+      log.info(
+        {
+          memberCount: memberIds.length,
+          identityCount: identities.length,
+          afterMemberId: batchAfterMemberId,
+        },
+        'Fetched duplicate unverified identities for batch',
+      )
 
-    for (const identitiesChunk of chunkArray(identities, IDENTITY_CONCURRENCY)) {
-      await Promise.all(
-        identitiesChunk.map(async (identity) => {
-          try {
-            await consolidateDuplicateIdentity(qx, temporal, identity)
-          } catch (err) {
-            log.error({ err, identity }, 'Failed to consolidate duplicate unverified identity')
-            throw err
-          }
-        }),
+      for (const identitiesChunk of chunkArray(identities, IDENTITY_CONCURRENCY)) {
+        await Promise.all(
+          identitiesChunk.map(async (identity) => {
+            try {
+              await consolidateDuplicateIdentity(qx, temporal, identity)
+            } catch (err) {
+              log.error(
+                { err, identity, afterMemberId: batchAfterMemberId },
+                'Failed to consolidate duplicate unverified identity',
+              )
+              throw err
+            }
+          }),
+        )
+      }
+
+      afterMemberId = memberIds[memberIds.length - 1]
+
+      const isLastBatch = testRun || memberIds.length < batchSize
+      hasMore = !isLastBatch
+
+      log.info(
+        { count: memberIds.length, afterMemberId },
+        isLastBatch ? 'Batch processed.' : 'Batch processed. Continuing with next batch.',
       )
     }
 
-    const lastMemberId = memberIds[memberIds.length - 1]
-
-    log.info(
-      { count: memberIds.length, lastMemberId },
-      memberIds.length === batchSize
-        ? 'Batch processed. Re-run with --afterMemberId to continue.'
-        : 'Final batch processed.',
-    )
-
     process.exit(0)
   } catch (err) {
-    log.error({ err }, 'Script failed')
+    log.error({ err, afterMemberId }, 'Script failed. Re-run with --afterMemberId to resume.')
     process.exit(1)
   }
 })
