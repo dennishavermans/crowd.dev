@@ -2,7 +2,8 @@ import type { ZodType } from 'zod'
 
 import type { Logger } from '@crowd/logging'
 
-import type { ConnectorHttp } from './http/client'
+import type { ConnectorHttp, ResponseInterpreter } from './http/client'
+import type { BudgetProbe, TokenPool } from './pool/tokenPool'
 
 export interface Channel {
   channelId: string
@@ -42,4 +43,7 @@ export interface Manifest {
   platform: string
   syncs: SyncDefinition[]
   discover: (credential: Credential) => Promise<Channel[]>
+  seedTokens?: (credential: Credential, pool: TokenPool) => Promise<void>
+  probeBudget?: BudgetProbe
+  interpretResponse?: ResponseInterpreter
 }

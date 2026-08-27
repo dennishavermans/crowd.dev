@@ -1,4 +1,4 @@
-import { createTokenPool, getSync } from '@crowd/connectors'
+import { createTokenPool, findManifest, getSync } from '@crowd/connectors'
 import { claimDueUnits, rescheduleUnit } from '@crowd/data-access-layer/src/connectors'
 import type { IClaimedUnit } from '@crowd/data-access-layer/src/connectors'
 import { dbStoreQx } from '@crowd/data-access-layer/src/queryExecutor'
@@ -23,7 +23,10 @@ export async function admitByBudget(units: IClaimedUnit[]): Promise<IAdmissionRe
   const admitted: IClaimedUnit[] = []
   const deferred: IClaimedUnit[] = []
   for (const unit of units) {
-    const pool = createTokenPool(svc.redis, unit.platform, unit.integrationId)
+    const manifest = findManifest(unit.platform)
+    const pool = createTokenPool(svc.redis, unit.platform, unit.integrationId, {
+      probeBudget: manifest?.probeBudget,
+    })
     if (await pool.hasHeadroom(DEFAULT_RUN_ESTIMATE)) {
       admitted.push(unit)
     } else {

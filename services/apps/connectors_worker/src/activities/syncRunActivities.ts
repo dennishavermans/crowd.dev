@@ -6,6 +6,7 @@ import {
   createHttpClient,
   createTokenPool,
   getCredential,
+  getManifest,
   getSync,
 } from '@crowd/connectors'
 import type { Emitter, SyncContext } from '@crowd/connectors'
@@ -64,16 +65,19 @@ export async function executeSync(unitId: string): Promise<void> {
       throw new Error('data sink worker emitter not initialized')
     }
 
-    // POC only: dummy has no credentials; token minting from the credential is M4
-    if (unit.platform !== 'dummy') {
-      await getCredential(qx, unit.integrationId)
+    const manifest = getManifest(unit.platform)
+    const pool = createTokenPool(svc.redis, unit.platform, unit.integrationId, {
+      probeBudget: manifest.probeBudget,
+    })
+    if (manifest.seedTokens) {
+      const credential = await getCredential(qx, unit.integrationId)
+      await manifest.seedTokens(credential, pool)
     }
-
-    const pool = createTokenPool(svc.redis, unit.platform, unit.integrationId)
     const http = createHttpClient({
       acquireToken: pool.acquire,
       parkToken: pool.park,
       quarantineToken: pool.quarantine,
+      interpretResponse: manifest.interpretResponse,
       log,
     })
 

@@ -14,7 +14,7 @@ export interface BudgetSnapshot {
 export type BudgetProbe = (
   platform: string,
   connectionId: string,
-  tokenId: string,
+  token: IPooledToken,
 ) => Promise<BudgetSnapshot | null>
 
 // POC only: the probe is the single source of truth for budgets (github /rate_limit is free and
@@ -122,14 +122,14 @@ export function createTokenPool(
 
   async function loadBucket(
     probe: BudgetProbe,
-    tokenId: string,
+    token: IPooledToken,
     nowMs: number,
   ): Promise<IBucket | null> {
-    const bucket = await readBucket(tokenId)
+    const bucket = await readBucket(token.id)
     if (!needsProbe(bucket, nowMs)) {
       return bucket
     }
-    const snapshot = await probe(platform, connectionId, tokenId)
+    const snapshot = await probe(platform, connectionId, token)
     if (!snapshot) {
       return null
     }
@@ -139,7 +139,7 @@ export function createTokenPool(
       resetAtMs: snapshot.resetAt.getTime(),
       probedAtMs: nowMs,
     }
-    await redis.hSet(bucketKey(tokenId), {
+    await redis.hSet(bucketKey(token.id), {
       limit: String(probed.limit),
       remaining: String(probed.remaining),
       resetAt: String(probed.resetAtMs),
@@ -161,7 +161,7 @@ export function createTokenPool(
           continue
         }
         if (probe) {
-          const bucket = await loadBucket(probe, id, nowMs)
+          const bucket = await loadBucket(probe, { id, value: state.value }, nowMs)
           if (bucket && bucket.remaining <= 0) {
             const resetAt = new Date(bucket.resetAtMs)
             if (!earliestBudgetResetAt || resetAt < earliestBudgetResetAt) {
@@ -202,7 +202,7 @@ export function createTokenPool(
         if (!isHealthy(state, nowMs)) {
           continue
         }
-        const bucket = await loadBucket(probe, id, nowMs)
+        const bucket = await loadBucket(probe, { id, value: state.value }, nowMs)
         if (!bucket) {
           return true
         }
@@ -225,8 +225,9 @@ export function createTokenPool(
 
     async seed(tokenId: string, value: string): Promise<void> {
       const json = await redis.hGet(tokensKey, tokenId)
-      const state = json ? (JSON.parse(json) as ITokenState) : {}
-      await redis.hSet(tokensKey, tokenId, JSON.stringify({ ...state, value }))
+      const state = json ? (JSON.parse(json) as ITokenState) : null
+      const next = state && state.value === value ? { ...state, value } : { value }
+      await redis.hSet(tokensKey, tokenId, JSON.stringify(next))
       await redis.zAdd(lruKey, { score: 0, value: tokenId }, { NX: true })
     },
 

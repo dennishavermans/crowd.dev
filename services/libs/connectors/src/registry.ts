@@ -6,6 +6,10 @@ export function registerConnector(manifest: Manifest): void {
   manifests.set(manifest.platform, manifest)
 }
 
+export function findManifest(platform: string): Manifest | undefined {
+  return manifests.get(platform)
+}
+
 export function getManifest(platform: string): Manifest {
   const manifest = manifests.get(platform)
   if (!manifest) {
