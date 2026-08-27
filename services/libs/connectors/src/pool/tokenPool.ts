@@ -194,14 +194,12 @@ export function createTokenPool(
       }
       const nowMs = Date.now()
       const states = await readStates()
-      if (states.size === 0) {
+      const healthy = [...states.entries()].filter(([, state]) => isHealthy(state, nowMs))
+      if (healthy.length === 0) {
         return true
       }
       let pooledRemaining = 0
-      for (const [id, state] of states.entries()) {
-        if (!isHealthy(state, nowMs)) {
-          continue
-        }
+      for (const [id, state] of healthy) {
         const bucket = await loadBucket(probe, { id, value: state.value }, nowMs)
         if (!bucket) {
           return true
