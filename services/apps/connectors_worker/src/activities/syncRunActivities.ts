@@ -8,10 +8,11 @@ import {
   getCredential,
   getSync,
 } from '@crowd/connectors'
-import type { SyncContext } from '@crowd/connectors'
+import type { Emitter, SyncContext } from '@crowd/connectors'
 import {
   getUnitById,
   recordRunFailure,
+  recordRunPartial,
   recordRunSuccess,
   rescheduleUnit,
 } from '@crowd/data-access-layer/src/connectors'
@@ -51,6 +52,9 @@ export async function executeSync(unitId: string): Promise<void> {
     }
   }, HEARTBEAT_INTERVAL_MS)
 
+  let emitter: Emitter | null = null
+  let committedWatermark = unit.watermark
+
   try {
     const integration = await fetchIntegrationById(qx, unit.integrationId)
     if (!integration?.segmentId) {
@@ -76,7 +80,7 @@ export async function executeSync(unitId: string): Promise<void> {
     const sync = getSync(unit.platform, unit.syncName)
 
     const streamRepo = new IntegrationStreamRepository(svc.postgres.writer, log)
-    const emitter = createEmit({
+    emitter = createEmit({
       publishResult: streamRepo.publishExternalResult.bind(streamRepo),
       sinkEmitter: svc.dataSinkWorkerEmitter,
       unit,
@@ -84,8 +88,6 @@ export async function executeSync(unitId: string): Promise<void> {
       schema: sync.schema,
       log,
     })
-
-    let committedWatermark = unit.watermark
 
     const ctx: SyncContext = {
       channel: { channelId: unit.channelId, channelName: unit.channelName },
@@ -108,7 +110,16 @@ export async function executeSync(unitId: string): Promise<void> {
   } catch (err) {
     if (err instanceof ConnectorError && err.errorClass === 'provider.rate_limit') {
       const resumeAt = err.options?.resumeAt ?? new Date(Date.now() + RATE_LIMIT_FALLBACK_MS)
-      await rescheduleUnit(qx, unitId, resumeAt)
+      if (emitter && committedWatermark) {
+        await recordRunPartial(
+          qx,
+          unitId,
+          { watermark: committedWatermark, emittedCount: emitter.emittedCount() },
+          resumeAt,
+        )
+      } else {
+        await rescheduleUnit(qx, unitId, resumeAt)
+      }
       log.info({ resumeAt }, 'sync run rate-limit parked')
       return
     }

@@ -91,6 +91,29 @@ export async function recordRunSuccess(
   )
 }
 
+export async function recordRunPartial(
+  qx: QueryExecutor,
+  id: string,
+  progress: ISyncRunSuccess,
+  resumeAt: Date,
+): Promise<void> {
+  await qx.result(
+    `UPDATE integration.sync_units
+     SET watermark = $(watermark)::jsonb,
+         "emittedCount" = $(emittedCount),
+         "nextRunAt" = $(resumeAt),
+         "lockedAt" = NULL,
+         "updatedAt" = now()
+     WHERE id = $(id)`,
+    {
+      id,
+      watermark: JSON.stringify(progress.watermark),
+      emittedCount: progress.emittedCount,
+      resumeAt,
+    },
+  )
+}
+
 export async function recordRunFailure(
   qx: QueryExecutor,
   id: string,
