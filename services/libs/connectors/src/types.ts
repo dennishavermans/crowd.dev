@@ -2,6 +2,8 @@ import type { ZodType } from 'zod'
 
 import type { Logger } from '@crowd/logging'
 
+import type { ConnectorHttp } from './http/client'
+
 export interface Channel {
   channelId: string
   channelName: string
@@ -25,6 +27,7 @@ export interface SyncContext {
   watermark: Record<string, unknown> | null
   emit: (records: unknown[]) => Promise<void>
   commitWatermark: (watermark: Record<string, unknown>) => Promise<void>
+  http: ConnectorHttp
   log: Logger
 }
 

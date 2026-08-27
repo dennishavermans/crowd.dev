@@ -8,7 +8,7 @@ import { scheduleDispatcher } from './schedules/dispatcher'
 const config: Config = {
   envvars: [],
   producer: {
-    enabled: false,
+    enabled: true,
   },
   temporal: {
     enabled: true,
