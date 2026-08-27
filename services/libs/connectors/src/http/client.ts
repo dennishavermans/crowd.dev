@@ -29,7 +29,6 @@ export interface HttpClientDeps {
   acquireToken: () => Promise<IPooledToken>
   parkToken: (tokenId: string, resumeAt: Date) => Promise<void>
   quarantineToken: (tokenId: string) => Promise<void>
-  correctBudget: (headers: Record<string, string>) => Promise<void>
   log: Logger
   applyToken?: TokenApplier
   interpretResponse?: ResponseInterpreter
@@ -81,7 +80,6 @@ async function attemptRequest<T>(
   const error = classifyResponse(deps, response.status, headers, response.data)
 
   if (!error) {
-    await deps.correctBudget(headers)
     return response.data
   }
 
@@ -162,9 +160,14 @@ function isRateLimited(status: number, headers: Record<string, string>): boolean
 }
 
 function computeResumeAt(headers: Record<string, string>): Date {
-  const retryAfterSeconds = Number(headers['retry-after'])
+  const retryAfter = headers['retry-after']
+  const retryAfterSeconds = Number(retryAfter)
   if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
     return new Date(Date.now() + retryAfterSeconds * 1000)
+  }
+  const retryAfterDateMs = Date.parse(retryAfter ?? '')
+  if (Number.isFinite(retryAfterDateMs) && retryAfterDateMs > Date.now()) {
+    return new Date(retryAfterDateMs)
   }
   const resetEpochSeconds = Number(headers['x-ratelimit-reset'])
   if (Number.isFinite(resetEpochSeconds) && resetEpochSeconds > 0) {

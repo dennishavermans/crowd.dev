@@ -12,7 +12,7 @@ export interface EmitterDeps {
   sinkEmitter: DataSinkWorkerEmitter
   unit: ISyncUnit
   segmentId: string
-  schema: ZodType<unknown>
+  schema: ZodType<Record<string, unknown>>
   log: Logger
 }
 
@@ -26,7 +26,7 @@ export function createEmit(deps: EmitterDeps): Emitter {
 
   const emit = async (records: unknown[]): Promise<void> => {
     for (const record of records) {
-      let parsed: unknown
+      let parsed: Record<string, unknown>
       try {
         parsed = deps.schema.parse(record)
       } catch (err) {
@@ -38,7 +38,7 @@ export function createEmit(deps: EmitterDeps): Emitter {
         throw err
       }
 
-      const payload = { ...(parsed as Record<string, unknown>), channel: deps.unit.channelName }
+      const payload = { ...parsed, channel: deps.unit.channelName }
 
       const resultId = await deps.publishResult(deps.unit.integrationId, {
         type: IntegrationResultType.ACTIVITY,

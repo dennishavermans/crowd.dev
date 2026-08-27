@@ -31,7 +31,7 @@ export interface SyncContext {
 export interface SyncDefinition {
   name: string
   cadenceMinutes: number
-  schema: ZodType<unknown>
+  schema: ZodType<Record<string, unknown>>
   run: (ctx: SyncContext) => Promise<void>
 }
 
