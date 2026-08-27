@@ -2284,6 +2284,9 @@ importers:
       '@crowd/common':
         specifier: workspace:*
         version: link:../common
+      '@crowd/common_services':
+        specifier: workspace:*
+        version: link:../common_services
       '@crowd/data-access-layer':
         specifier: workspace:*
         version: link:../data-access-layer
@@ -2293,6 +2296,9 @@ importers:
       '@crowd/redis':
         specifier: workspace:*
         version: link:../redis
+      '@crowd/types':
+        specifier: workspace:*
+        version: link:../types
       axios:
         specifier: ^1.6.8
         version: 1.16.1

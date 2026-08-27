@@ -1,3 +1,5 @@
+import type { ZodType } from 'zod'
+
 import type { Logger } from '@crowd/logging'
 
 export interface Channel {
@@ -29,6 +31,7 @@ export interface SyncContext {
 export interface SyncDefinition {
   name: string
   cadenceMinutes: number
+  schema: ZodType<unknown>
   run: (ctx: SyncContext) => Promise<void>
 }
 
