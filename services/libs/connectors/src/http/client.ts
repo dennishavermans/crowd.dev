@@ -113,12 +113,13 @@ async function send<T>(
   token: IPooledToken,
 ): Promise<AxiosResponse<T>> {
   const applyToken = deps.applyToken ?? applyBearerToken
+  const authenticatedConfig = {
+    timeout: DEFAULT_TIMEOUT_MS,
+    ...applyToken(config, token),
+    validateStatus: () => true,
+  }
   try {
-    return await axios.request<T>({
-      timeout: DEFAULT_TIMEOUT_MS,
-      ...applyToken(config, token),
-      validateStatus: () => true,
-    })
+    return await axios.request<T>(authenticatedConfig)
   } catch (err) {
     throw new ProviderUnavailableError('no response from provider', { cause: err })
   }
