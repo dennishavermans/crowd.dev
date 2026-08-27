@@ -26,8 +26,9 @@ export function createEmit(deps: EmitterDeps): Emitter {
 
   const emit = async (records: unknown[]): Promise<void> => {
     for (const record of records) {
+      let parsed: unknown
       try {
-        deps.schema.parse(record)
+        parsed = deps.schema.parse(record)
       } catch (err) {
         if (err instanceof ZodError) {
           throw new ConnectorError('connector.code', 'record failed schema validation', {
@@ -37,7 +38,7 @@ export function createEmit(deps: EmitterDeps): Emitter {
         throw err
       }
 
-      const payload = { ...(record as Record<string, unknown>), channel: deps.unit.channelName }
+      const payload = { ...(parsed as Record<string, unknown>), channel: deps.unit.channelName }
 
       const resultId = await deps.publishResult(deps.unit.integrationId, {
         type: IntegrationResultType.ACTIVITY,
