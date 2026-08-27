@@ -13,7 +13,6 @@ import {
   IMemberIdentity,
   IMemberMergeSuggestion,
   MemberIdentityType,
-  MemberMergeSuggestionTable,
   OpenSearchIndex,
   PlatformType,
 } from '@crowd/types'
@@ -379,14 +378,14 @@ export async function getMemberMergeSuggestions(
 
 export async function addMemberToMerge(
   suggestions: IMemberMergeSuggestion[],
-  table: MemberMergeSuggestionTable,
+  similarityThreshold = 0.75,
 ): Promise<void> {
   if (suggestions.length > 0) {
     const memberMergeSuggestionsRepo = new MemberMergeSuggestionsRepository(
       svc.postgres.writer.connection(),
       svc.log,
     )
-    await memberMergeSuggestionsRepo.addToMerge(suggestions, table)
+    await memberMergeSuggestionsRepo.addToMerge(suggestions, similarityThreshold)
   }
 }
 
@@ -498,7 +497,7 @@ export async function getRawMemberMergeSuggestions(
   return memberMergeSuggestionsRepo.getRawMemberSuggestions(similarityFilter, limit)
 }
 
-export async function removeMemberMergeSuggestion(suggestion: string[]): Promise<void> {
+export async function removeMemberMergePair(suggestion: string[]): Promise<void> {
   if (suggestion.length !== 2) {
     svc.log.debug(`Suggestions array must have two ids!`)
     return
@@ -515,6 +514,15 @@ export async function addMemberSuggestionToNoMerge(suggestion: string[]): Promis
   }
   const qx = pgpQx(svc.postgres.writer.connection())
 
-  await insertMemberNoMerge(qx, suggestion[0], suggestion[1])
-  await insertMemberNoMerge(qx, suggestion[1], suggestion[0])
+  try {
+    await insertMemberNoMerge(qx, suggestion[0], suggestion[1])
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code === '23503') {
+      svc.log.info({ suggestion }, 'Foreign key constraint violation, skipping no merge!')
+      return
+    }
+
+    svc.log.error({ error, suggestion }, 'Error adding member suggestion to no merge!')
+    throw error
+  }
 }

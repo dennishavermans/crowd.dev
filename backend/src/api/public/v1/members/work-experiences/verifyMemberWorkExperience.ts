@@ -30,7 +30,7 @@ const paramsSchema = z.object({
 
 const bodySchema = z.object({
   verified: z.boolean(),
-  verifiedBy: z.string(),
+  verifiedBy: z.string().trim().min(1),
 })
 
 export async function verifyMemberWorkExperience(req: Request, res: Response): Promise<void> {
@@ -92,8 +92,9 @@ export async function verifyMemberWorkExperience(req: Request, res: Response): P
             await updateMemberOrganization(tx, memberId, overlappingRow.id, verifiedUpdate)
           }
         } else {
-          // Unverifying removes the grouped work experience from both visible and hidden rows
-          await deleteMemberOrganizations(tx, memberId, memberOrgIdsToDelete, true)
+          // Unverifying removes the grouped work experience from both visible and hidden rows.
+          // This is a human decision, so deletedBy is set — enrichment must never recreate it.
+          await deleteMemberOrganizations(tx, memberId, memberOrgIdsToDelete, true, verifiedBy)
         }
       })
 

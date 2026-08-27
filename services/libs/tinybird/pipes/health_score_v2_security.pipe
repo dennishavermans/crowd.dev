@@ -37,7 +37,8 @@ SQL >
         branchProtectionAllowsForcePush,
         dependencyHealthScore,
         dependencyHealthAvailable,
-        vulnerableDeps
+        vulnerableDeps,
+        '2.0.0' AS methodologyVersion
     FROM
         (
             SELECT
@@ -90,7 +91,7 @@ SQL >
                         toUInt8(
                             round(least(toFloat64OrZero(rd.scorecardScore), 10) * 0.7)
                         ) AS scorecardScorePts,
-                        (rd.url != '') AS scorecardAvailable,
+                        (rd.scorecardLastRunAt IS NOT NULL) AS scorecardAvailable,
                         rd.scorecardScore AS scorecardScore,
                         toUInt8(
                             2 * coalesce(rd.securityPolicyEnabled, 0)
@@ -116,12 +117,18 @@ SQL >
                         ) AS dependencyHealthScore,
                         (pkgs.repoUrl != '') AS dependencyHealthAvailable,
                         dh.vulnerableDeps AS vulnerableDeps
-                    FROM (SELECT DISTINCT url FROM repositories WHERE deletedAt IS NULL) AS allRepos
+                    FROM
+                        (
+                            SELECT DISTINCT url
+                            FROM repositories FINAL
+                            WHERE deletedAt IS NULL AND archived = false AND excluded = false
+                        ) AS allRepos
                     LEFT JOIN
                         (
                             SELECT
                                 url,
                                 argMax(scorecardScore, updatedAt) AS scorecardScore,
+                                argMax(scorecardLastRunAt, updatedAt) AS scorecardLastRunAt,
                                 argMax(securityPolicyEnabled, updatedAt) AS securityPolicyEnabled,
                                 argMax(branchProtectionEnabled, updatedAt) AS branchProtectionEnabled,
                                 argMax(
@@ -143,8 +150,8 @@ SQL >
                                 repoUrl,
                                 countIf(status = 'OPEN' AND severity = 'CRITICAL') AS openCriticals,
                                 countIf(status = 'OPEN' AND severity = 'HIGH') AS openHighs,
-                                countIf(status = 'OPEN' AND severity = 'MODERATE') AS openModerates
-                            FROM vulnerabilities
+                                countIf(status = 'OPEN' AND severity = 'MEDIUM') AS openModerates
+                            FROM vulnerabilities FINAL
                             GROUP BY repoUrl
                         ) AS vc
                         ON vc.repoUrl = allRepos.url

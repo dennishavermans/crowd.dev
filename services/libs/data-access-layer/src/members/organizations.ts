@@ -83,7 +83,8 @@ export async function fetchMemberOrganizationsBySource(
         "title",
         "memberId",
         "source",
-        "deletedAt"
+        "deletedAt",
+        "deletedBy"
       FROM "memberOrganizations"
       WHERE "memberId" = $(memberId)
         AND "source" = $(source)
@@ -513,15 +514,19 @@ export async function deleteMemberOrganizations(
   memberId: string,
   ids?: string[],
   softDelete = true,
+  deletedBy?: string,
 ): Promise<void> {
-  // Base query depends on soft vs hard delete
+  // deletedBy marks a human delete; the enrichment worker's own rebuild deletes must
+  // never set it, since only a human delete permanently blocks recreation.
   const baseQuery = softDelete
-    ? 'UPDATE "memberOrganizations" SET "deletedAt" = NOW()'
+    ? deletedBy
+      ? 'UPDATE "memberOrganizations" SET "deletedAt" = NOW(), "deletedBy" = $(deletedBy)'
+      : 'UPDATE "memberOrganizations" SET "deletedAt" = NOW()'
     : 'DELETE FROM "memberOrganizations"'
 
   // Build WHERE clause
   const conditions = ['"memberId" = $(memberId)']
-  const params: Record<string, unknown> = { memberId }
+  const params: Record<string, unknown> = { memberId, deletedBy }
 
   if (ids?.length) {
     conditions.push(`"id" IN ($(ids:csv))`)
@@ -843,6 +848,24 @@ export async function addMemberRole(
   return row?.id
 }
 
+async function relocateSoftDeletedRoles(
+  qx: QueryExecutor,
+  primaryId: string,
+  secondaryId: string,
+  entityIdField: EntityField,
+): Promise<void> {
+  await qx.result(
+    `
+      UPDATE "memberOrganizations"
+      SET "${entityIdField}" = $(primaryId),
+          "updatedAt" = NOW()
+      WHERE "${entityIdField}" = $(secondaryId)
+        AND "deletedAt" IS NOT NULL
+    `,
+    { primaryId, secondaryId },
+  )
+}
+
 async function moveRolesBetweenEntities(
   qx: QueryExecutor,
   primaryId: string,
@@ -989,6 +1012,10 @@ async function moveRolesBetweenEntities(
       shouldRecalculateAffiliations = true
     }
   }
+
+  // Active roles were moved above; re-point deleted roles to the primary
+  // without restoring them so their tombstones are preserved.
+  await relocateSoftDeletedRoles(qx, primaryId, secondaryId, mergeStrat.entityIdField)
 
   return { shouldRecalculateAffiliations }
 }
