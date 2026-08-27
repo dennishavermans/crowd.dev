@@ -102,6 +102,9 @@ async function attemptRequest<T>(
       { tokenId: token.id, status: response.status },
       'token quarantined on auth failure',
     )
+    if (allowTokenRotation) {
+      return attemptRequest<T>(deps, config, false)
+    }
   }
 
   throw error
