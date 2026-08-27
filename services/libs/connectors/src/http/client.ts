@@ -157,7 +157,10 @@ function isRateLimited(status: number, headers: Record<string, string>): boolean
   if (status === 429) {
     return true
   }
-  return status === 403 && headers['x-ratelimit-remaining'] === '0'
+  return (
+    status === 403 &&
+    (headers['x-ratelimit-remaining'] === '0' || headers['retry-after'] !== undefined)
+  )
 }
 
 function computeResumeAt(headers: Record<string, string>): Date {
@@ -171,7 +174,7 @@ function computeResumeAt(headers: Record<string, string>): Date {
     return new Date(retryAfterDateMs)
   }
   const resetEpochSeconds = Number(headers['x-ratelimit-reset'])
-  if (Number.isFinite(resetEpochSeconds) && resetEpochSeconds > 0) {
+  if (Number.isFinite(resetEpochSeconds) && resetEpochSeconds * 1000 > Date.now()) {
     return new Date(resetEpochSeconds * 1000)
   }
   return new Date(Date.now() + RATE_LIMIT_FALLBACK_MS)
