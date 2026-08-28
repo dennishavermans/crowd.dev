@@ -10,7 +10,8 @@
     "lint": "npx eslint --ext .ts src --max-warnings=0",
     "format": "npx prettier --write \"src/**/*.ts\"",
     "format-check": "npx prettier --check .",
-    "tsc-check": "tsc --noEmit"
+    "tsc-check": "tsc --noEmit",
+    "script:seed-github-sync-units": "tsx src/bin/seed-github-sync-units.ts"
   },
   "dependencies": {
     "@crowd/archetype-standard": "workspace:*",

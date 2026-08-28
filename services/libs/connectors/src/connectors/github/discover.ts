@@ -11,6 +11,21 @@ interface InstallationRepo {
   html_url: string
 }
 
+export async function resolveRepoChannel(
+  token: string,
+  owner: string,
+  name: string,
+): Promise<Channel> {
+  const response = await axios.get(`https://api.github.com/repos/${owner}/${name}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+    },
+    timeout: GITHUB_REQUEST_TIMEOUT_MS,
+  })
+  return { channelId: response.data.node_id, channelName: response.data.html_url }
+}
+
 export async function discoverRepos(credential: Credential): Promise<Channel[]> {
   const installationId = requireInstallationId()
   const { token } = await mintInstallationToken(credential, installationId)
