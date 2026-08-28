@@ -4,7 +4,7 @@ import { getCredential } from '@crowd/connectors'
 import { githubConnector } from '@crowd/connectors/src/connectors/github'
 import {
   mintInstallationToken,
-  requireInstallationId,
+  resolveInstallationId,
 } from '@crowd/connectors/src/connectors/github/appToken'
 import { resolveRepoChannel } from '@crowd/connectors/src/connectors/github/discover'
 import type { SyncUnitUpsert } from '@crowd/data-access-layer/src/connectors'
@@ -24,9 +24,19 @@ interface RepoRef {
 
 function usage(): never {
   log.error(
-    'Usage: seed-github-sync-units --integration-id <uuid> <owner/repo | github url> [more repos ...]',
+    'Usage: seed-github-sync-units --integration-id <uuid> [--installation-id <id>] <owner/repo | github url> [more repos ...]',
   )
   process.exit(1)
+}
+
+function takeFlag(argv: string[], flag: string): string | undefined {
+  const flagIndex = argv.indexOf(flag)
+  if (flagIndex === -1) {
+    return undefined
+  }
+  const value = argv[flagIndex + 1]
+  argv.splice(flagIndex, 2)
+  return value
 }
 
 function parseRepoArg(arg: string): RepoRef {
@@ -38,17 +48,18 @@ function parseRepoArg(arg: string): RepoRef {
   return { owner: parts[0], name: parts[1] }
 }
 
-function parseArgs(argv: string[]): { integrationId: string; repos: RepoRef[] } {
-  const flagIndex = argv.indexOf('--integration-id')
-  if (flagIndex === -1 || !argv[flagIndex + 1]) {
+function parseArgs(rawArgv: string[]): {
+  integrationId: string
+  installationId?: string
+  repos: RepoRef[]
+} {
+  const argv = rawArgv.filter((arg) => arg !== '--')
+  const integrationId = takeFlag(argv, '--integration-id')
+  const installationId = takeFlag(argv, '--installation-id')
+  if (!integrationId || argv.length === 0) {
     usage()
   }
-  const integrationId = argv[flagIndex + 1]
-  const repoArgs = argv.filter((_, i) => i !== flagIndex && i !== flagIndex + 1)
-  if (repoArgs.length === 0) {
-    usage()
-  }
-  return { integrationId, repos: repoArgs.map(parseRepoArg) }
+  return { integrationId, installationId, repos: argv.map(parseRepoArg) }
 }
 
 async function getSegmentContext(
@@ -90,13 +101,14 @@ async function getSegmentContext(
 
 setImmediate(async () => {
   try {
-    const { integrationId, repos } = parseArgs(process.argv.slice(2))
+    const args = parseArgs(process.argv.slice(2))
+    const { integrationId, repos } = args
 
     const db = await getDbConnection(WRITE_DB_CONFIG())
     const qx = pgpQx(db)
 
     const credential = await getCredential(qx, integrationId)
-    const installationId = requireInstallationId()
+    const installationId = args.installationId ?? (await resolveInstallationId(credential))
     const { token, expiresAt } = await mintInstallationToken(credential, installationId)
     log.info({ installationId, expiresAt }, 'github app auth verified, installation token minted')
 

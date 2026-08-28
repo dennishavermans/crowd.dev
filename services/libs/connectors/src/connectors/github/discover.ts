@@ -2,7 +2,7 @@ import axios from 'axios'
 
 import type { Channel, Credential } from '../../types'
 
-import { GITHUB_REQUEST_TIMEOUT_MS, mintInstallationToken, requireInstallationId } from './appToken'
+import { GITHUB_REQUEST_TIMEOUT_MS, mintInstallationToken, resolveInstallationId } from './appToken'
 
 const PER_PAGE = 100
 
@@ -27,7 +27,7 @@ export async function resolveRepoChannel(
 }
 
 export async function discoverRepos(credential: Credential): Promise<Channel[]> {
-  const installationId = requireInstallationId()
+  const installationId = await resolveInstallationId(credential)
   const { token } = await mintInstallationToken(credential, installationId)
 
   const channels: Channel[] = []
