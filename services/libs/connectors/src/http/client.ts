@@ -150,7 +150,7 @@ function classifyResponse(
       resumeAt: computeResumeAt(headers),
     })
   }
-  if (status >= 400) {
+  if (status >= 300) {
     return errorFromHttpStatus(status)
   }
   return null

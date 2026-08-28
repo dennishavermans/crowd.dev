@@ -2,7 +2,7 @@ import axios from 'axios'
 
 import type { Channel, Credential } from '../../types'
 
-import { mintInstallationToken, requireInstallationId } from './appToken'
+import { GITHUB_REQUEST_TIMEOUT_MS, mintInstallationToken, requireInstallationId } from './appToken'
 
 const PER_PAGE = 100
 
@@ -24,6 +24,7 @@ export async function discoverRepos(credential: Credential): Promise<Channel[]> 
         Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github+json',
       },
+      timeout: GITHUB_REQUEST_TIMEOUT_MS,
     })
     const repos = (response.data?.repositories ?? []) as InstallationRepo[]
     channels.push(...repos.map((r) => ({ channelId: r.node_id, channelName: r.html_url })))

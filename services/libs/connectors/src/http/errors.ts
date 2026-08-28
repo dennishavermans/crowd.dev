@@ -77,7 +77,7 @@ export function errorFromHttpStatus(
   if (status >= 500) {
     return new ProviderUnavailableError(message ?? `provider returned status ${status}`, opts)
   }
-  if (status >= 400) {
+  if (status >= 300) {
     return new ProviderContractError(message ?? `provider returned status ${status}`, opts)
   }
   return new ConnectorError('unknown', message ?? `unexpected status ${status}`, opts)

@@ -40,12 +40,19 @@ export function createEmit(deps: EmitterDeps): Emitter {
 
       const payload = { ...parsed, channel: deps.unit.channelName }
 
-      const resultId = await deps.publishResult(deps.unit.integrationId, {
-        type: IntegrationResultType.ACTIVITY,
-        segmentId: deps.segmentId,
-        data: payload,
-      })
-      await deps.sinkEmitter.triggerResultProcessing(resultId, resultId, false)
+      try {
+        const resultId = await deps.publishResult(deps.unit.integrationId, {
+          type: IntegrationResultType.ACTIVITY,
+          segmentId: deps.segmentId,
+          data: payload,
+        })
+        await deps.sinkEmitter.triggerResultProcessing(resultId, resultId, false)
+      } catch (err) {
+        if (err instanceof ConnectorError) {
+          throw err
+        }
+        throw new ConnectorError('sink.rejected', 'failed to hand record to sink', { cause: err })
+      }
 
       emitted += 1
     }

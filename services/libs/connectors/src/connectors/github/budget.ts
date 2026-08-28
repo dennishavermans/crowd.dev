@@ -2,6 +2,8 @@ import axios from 'axios'
 
 import type { BudgetProbe } from '../../pool/tokenPool'
 
+import { GITHUB_REQUEST_TIMEOUT_MS } from './appToken'
+
 interface RateLimitResource {
   limit: number
   remaining: number
@@ -15,6 +17,7 @@ export const probeGithubBudget: BudgetProbe = async (_platform, _connectionId, t
         Authorization: `Bearer ${token.value}`,
         Accept: 'application/vnd.github+json',
       },
+      timeout: GITHUB_REQUEST_TIMEOUT_MS,
     })
     const graphql = response.data?.resources?.graphql as RateLimitResource | undefined
     if (!graphql) {

@@ -102,6 +102,7 @@ export async function recordRunPartial(
      SET watermark = $(watermark)::jsonb,
          "emittedCount" = $(emittedCount),
          "nextRunAt" = $(resumeAt),
+         "lastRunAt" = now(),
          "lockedAt" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
