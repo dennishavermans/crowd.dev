@@ -3,7 +3,8 @@
  *
  * Deletes activities from PostgreSQL (`activityRelations`) and Tinybird
  * (`activities` and `activityRelations` datasources) for a given platform and
- * one or more activity types, optionally bounded by a date cutoff.
+ * optional activity types and/or channel (repo URL), optionally bounded by a
+ * date cutoff.
  *
  * Before any deletion, the script prints the affected row counts from Tinybird
  * and prompts for confirmation (skip with --yes).
@@ -16,7 +17,8 @@
  * Usage:
  *   pnpm run cleanup-activities-by-platform-and-type -- \
  *     --platform <platform> \
- *     --types <type1,type2,...> \
+ *     [--types <type1,type2,...>] \
+ *     [--channel <repo-url>] \
  *     [--segment-id <uuid>] \
  *     [--before <YYYY-MM-DD>] \
  *     [--dry-run] \
@@ -25,9 +27,10 @@
  *
  * Required:
  *   --platform   Platform name (e.g. 'gitlab', 'gerrit')
- *   --types      Comma-separated activity types (e.g. 'merge_request-closed')
  *
  * Optional:
+ *   --types      Comma-separated activity types (e.g. 'merge_request-closed')
+ *   --channel    Repo URL to restrict deletion to (e.g. 'https://github.com/org/repo')
  *   --segment-id Restrict deletion to a single segment (UUID)
  *   --before     Only delete rows with "updatedAt" < this date (YYYY-MM-DD)
  *   --dry-run    Report what would be deleted without deleting
@@ -57,6 +60,7 @@ const log = getServiceChildLogger('cleanup-activities-by-platform-and-type-scrip
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]+$/
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+const CHANNEL_PATTERN = /^[A-Za-z0-9._/:@-]+$/
 
 const POSTGRES_BATCH_SIZE = 10000
 const TINYBIRD_JOB_POLL_INTERVAL_MS = 60_000
@@ -64,7 +68,8 @@ const TINYBIRD_JOB_TIMEOUT_MS = 6 * 60 * 60 * 1000 // 6h: bulk deletes can be sl
 
 interface CleanupFilters {
   platform: string
-  types: string[]
+  types?: string[]
+  channel?: string
   segmentId?: string
   before?: string
 }
@@ -103,8 +108,13 @@ interface CleanupResult {
 /** Tinybird/ClickHouse WHERE clause — unquoted identifiers, single-quoted strings. */
 function buildTinybirdFilterClause(filters: CleanupFilters): string {
   const parts = [`platform = '${filters.platform}'`]
-  const typesList = filters.types.map((t) => `'${t}'`).join(', ')
-  parts.push(`type IN (${typesList})`)
+  if (filters.types && filters.types.length > 0) {
+    const typesList = filters.types.map((t) => `'${t}'`).join(', ')
+    parts.push(`type IN (${typesList})`)
+  }
+  if (filters.channel) {
+    parts.push(`channel = '${filters.channel}'`)
+  }
   if (filters.segmentId) {
     parts.push(`segmentId = '${filters.segmentId}'`)
   }
@@ -123,10 +133,15 @@ function buildPostgresFilter(filters: CleanupFilters): {
   where: string
   values: Record<string, unknown>
 } {
-  const conditions: string[] = [`platform = $(platform)`, `type IN ($(types:csv))`]
-  const values: Record<string, unknown> = {
-    platform: filters.platform,
-    types: filters.types,
+  const conditions: string[] = [`platform = $(platform)`]
+  const values: Record<string, unknown> = { platform: filters.platform }
+  if (filters.types && filters.types.length > 0) {
+    conditions.push(`type IN ($(types:csv))`)
+    values.types = filters.types
+  }
+  if (filters.channel) {
+    conditions.push(`channel = $(channel)`)
+    values.channel = filters.channel
   }
   if (filters.segmentId) {
     conditions.push(`"segmentId" = $(segmentId)`)
@@ -284,10 +299,10 @@ async function deleteActivitiesFromTinybird(
 // ---------------------------------------------------------------------------
 
 function resultJsonPath(filters: CleanupFilters, startTime: string): string {
-  const safeSuffix = `${filters.platform}_${filters.types.join('-')}`.replace(
-    /[^A-Za-z0-9_-]/g,
-    '_',
-  )
+  const parts = [filters.platform]
+  if (filters.types && filters.types.length > 0) parts.push(filters.types.join('-'))
+  if (filters.channel) parts.push(filters.channel)
+  const safeSuffix = parts.join('_').replace(/[^A-Za-z0-9_-]/g, '_')
   return path.join(
     '/tmp',
     `cleanup_activities_${safeSuffix}_${startTime.replace(/[:.]/g, '-')}.json`,
@@ -478,7 +493,8 @@ function printHelp(): void {
     Usage:
       pnpm run cleanup-activities-by-platform-and-type -- \\
         --platform <platform> \\
-        --types <type1,type2,...> \\
+        [--types <type1,type2,...>] \\
+        [--channel <repo-url>] \\
         [--segment-id <uuid>] \\
         [--before <YYYY-MM-DD>] \\
         [--dry-run] \\
@@ -486,10 +502,11 @@ function printHelp(): void {
         [--tb-token <token>]
 
     Required:
-      --platform   Platform name (e.g. 'gitlab', 'gerrit')
-      --types      Comma-separated activity types (e.g. 'merge_request-closed')
+      --platform   Platform name (e.g. 'gitlab', 'gerrit', 'git', 'github')
 
     Optional:
+      --types      Comma-separated activity types (e.g. 'merge_request-closed')
+      --channel    Repo URL to restrict deletion to (e.g. 'https://github.com/org/repo')
       --segment-id Restrict deletion to a single segment (UUID)
       --before     Only delete rows with "updatedAt" < this date (YYYY-MM-DD)
       --dry-run    Report what would be deleted without deleting
@@ -497,13 +514,17 @@ function printHelp(): void {
       --tb-token   Override CROWD_TINYBIRD_ACTIVITIES_TOKEN
 
     Examples:
-      # Dry run: see how many gitlab merge_request-closed rows would be deleted
+      # Dry run: all git activities for a specific repo
       pnpm run cleanup-activities-by-platform-and-type -- \\
-        --platform gitlab --types merge_request-closed --dry-run
+        --platform git --channel https://github.com/org/repo --dry-run
 
-      # Actual cleanup (will prompt for confirmation)
+      # Delete specific types across a whole project segment
       pnpm run cleanup-activities-by-platform-and-type -- \\
-        --platform gitlab --types merge_request-closed
+        --platform github --types fork,star --segment-id <uuid>
+
+      # Delete all git activities for a repo in a specific segment
+      pnpm run cleanup-activities-by-platform-and-type -- \\
+        --platform git --channel https://github.com/org/repo --segment-id <uuid>
   `)
 }
 
@@ -520,6 +541,7 @@ async function main() {
   const tbToken = getFlagValue(args, '--tb-token')
   const platform = getFlagValue(args, '--platform')
   const typesArg = getFlagValue(args, '--types')
+  const channel = getFlagValue(args, '--channel')
   const segmentId = getFlagValue(args, '--segment-id')
   const before = getFlagValue(args, '--before')
 
@@ -533,24 +555,33 @@ async function main() {
     process.exit(1)
   }
 
-  if (!typesArg) {
-    log.error('Error: --types is required (comma-separated)')
-    printHelp()
-    process.exit(1)
-  }
-  const types = typesArg
-    .split(',')
-    .map((t) => t.trim())
-    .filter(Boolean)
-  if (types.length === 0) {
-    log.error('Error: --types must contain at least one value')
-    process.exit(1)
-  }
-  for (const t of types) {
-    if (!IDENTIFIER_PATTERN.test(t)) {
-      log.error(`Error: invalid type '${t}' (allowed: ${IDENTIFIER_PATTERN})`)
+  let types: string[] | undefined
+  if (typesArg) {
+    types = typesArg
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+    if (types.length === 0) {
+      log.error('Error: --types must contain at least one value')
       process.exit(1)
     }
+    for (const t of types) {
+      if (!IDENTIFIER_PATTERN.test(t)) {
+        log.error(`Error: invalid type '${t}' (allowed: ${IDENTIFIER_PATTERN})`)
+        process.exit(1)
+      }
+    }
+  }
+
+  if (channel && !CHANNEL_PATTERN.test(channel)) {
+    log.error(`Error: invalid --channel value '${channel}' (allowed: ${CHANNEL_PATTERN})`)
+    process.exit(1)
+  }
+
+  if (!types && !channel) {
+    log.error('Error: at least one of --types or --channel is required')
+    printHelp()
+    process.exit(1)
   }
 
   if (before) {
@@ -572,7 +603,7 @@ async function main() {
   }
 
   try {
-    await runCleanup({ platform, types, segmentId, before }, dryRun, skipConfirm, tbToken)
+    await runCleanup({ platform, types, channel, segmentId, before }, dryRun, skipConfirm, tbToken)
   } catch (error) {
     log.error(error, 'Failed to run cleanup script')
     log.error(`\n❌ Error: ${error.message}`)
