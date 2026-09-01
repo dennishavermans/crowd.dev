@@ -1,4 +1,4 @@
-import { createTokenPool, findManifest, getSync } from '@crowd/connectors'
+import { createTokenPool, findManifest, getSync, mapWithConcurrency } from '@crowd/connectors'
 import { claimDueUnits, rescheduleUnit } from '@crowd/data-access-layer/src/connectors'
 import type { IClaimedUnit } from '@crowd/data-access-layer/src/connectors'
 import { dbStoreQx } from '@crowd/data-access-layer/src/queryExecutor'
@@ -14,26 +14,24 @@ const CADENCE_JITTER_RATIO = 0.1
 const DEFAULT_RUN_ESTIMATE = 50
 const DEFER_MIN_MS = 30_000
 const DEFER_JITTER_MS = 60_000
+const BUDGET_PROBE_CONCURRENCY = 10
 
 export async function claimDue(limit: number): Promise<IClaimedUnit[]> {
   return claimDueUnits(dbStoreQx(svc.postgres.writer), limit)
 }
 
 export async function admitByBudget(units: IClaimedUnit[]): Promise<IAdmissionResult> {
-  const admitted: IClaimedUnit[] = []
-  const deferred: IClaimedUnit[] = []
-  for (const unit of units) {
+  const headrooms = await mapWithConcurrency(units, BUDGET_PROBE_CONCURRENCY, (unit) => {
     const manifest = findManifest(unit.platform)
     const pool = createTokenPool(svc.redis, unit.platform, unit.integrationId, {
       probeBudget: manifest?.probeBudget,
     })
-    if (await pool.hasHeadroom(DEFAULT_RUN_ESTIMATE)) {
-      admitted.push(unit)
-    } else {
-      deferred.push(unit)
-    }
+    return pool.hasHeadroom(DEFAULT_RUN_ESTIMATE)
+  })
+  return {
+    admitted: units.filter((_, index) => headrooms[index]),
+    deferred: units.filter((_, index) => !headrooms[index]),
   }
-  return { admitted, deferred }
 }
 
 export async function deferUnit(unitId: string): Promise<void> {
