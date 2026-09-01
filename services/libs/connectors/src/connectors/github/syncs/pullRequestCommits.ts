@@ -12,7 +12,7 @@ const COMMITS_PAGE_SIZE = 50
 async function runPullRequestCommitsSync(ctx: SyncContext): Promise<void> {
   const { owner, repo } = parseRepoChannel(ctx.channel.channelName)
 
-  await runDualPhasePrSync(ctx, async (prs, sinceDate) => {
+  await runDualPhasePrSync(ctx, async (prs) => {
     for (const pullRequest of prs) {
       let cursor: string | null = null
       let hasMore = true
@@ -31,24 +31,17 @@ async function runPullRequestCommitsSync(ctx: SyncContext): Promise<void> {
           break
         }
 
-        let reachedSince = false
-        const fresh: PrCommitNode['commit'][] = []
-        for (const node of commits.nodes) {
-          if (!node?.commit) {
-            continue
-          }
-          if (sinceDate && new Date(node.commit.authoredDate) < sinceDate) {
-            reachedSince = true
-            break
-          }
-          fresh.push(node.commit)
-        }
+        const fresh = commits.nodes
+          .map((node) => node?.commit)
+          .filter((commit): commit is PrCommitNode['commit'] =>
+            Boolean(commit?.author?.user?.login),
+          )
 
         if (fresh.length > 0) {
           await ctx.emit(fresh.map((commit) => toCommit(commit, pullRequest.id)))
         }
 
-        hasMore = !reachedSince && commits.pageInfo.hasNextPage
+        hasMore = commits.pageInfo.hasNextPage
         cursor = commits.pageInfo.endCursor
       }
     }

@@ -42,7 +42,7 @@ function toTimelineActivity(
       }
     }
     case 'ReviewRequestedEvent': {
-      if (!item.requestedReviewer || !item.id) {
+      if (!item.requestedReviewer?.login || !item.id) {
         return null
       }
       const timestamp = item.createdAt ?? DEFAULT_TIMESTAMP

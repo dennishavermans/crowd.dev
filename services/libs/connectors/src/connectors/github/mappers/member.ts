@@ -42,28 +42,37 @@ const GHOST_MEMBER: GithubMember = {
     },
   ],
   attributes: {
-    avatarUrl: 'https://avatars.githubusercontent.com/u/10137?v=4',
-    bio: "Hi, I'm @ghost! I take the place of user accounts that have been deleted.\n:ghost:\n",
-    company: '',
-    isBot: false,
-    isHireable: false,
-    location: 'Nothing to see here, move along.',
-    url: 'https://github.com/ghost',
-    websiteUrl: '',
+    url: { github: 'https://github.com/ghost' },
+    avatarUrl: { github: 'https://avatars.githubusercontent.com/u/10137?v=4' },
+    bio: {
+      github:
+        "Hi, I'm @ghost! I take the place of user accounts that have been deleted.\n:ghost:\n",
+    },
   },
 }
 
 function toAttributes(user: GithubUserNode): GithubMember['attributes'] {
-  return {
-    isHireable: user.isHireable ?? false,
-    url: `https://github.com/${user.login ?? ''}`,
-    bio: user.bio ?? '',
-    location: user.location ?? '',
-    avatarUrl: user.avatarUrl ?? '',
-    company: user.company ?? '',
-    isBot: user.__typename === 'Bot',
-    websiteUrl: user.websiteUrl ?? '',
+  if (user.__typename === 'Bot') {
+    return {
+      url: { github: user.url ?? '' },
+      avatarUrl: { github: user.avatarUrl ?? '' },
+      sourceId: { github: user.id?.toString() ?? '' },
+      isBot: { github: true },
+    }
   }
+
+  const attributes: GithubMember['attributes'] = {
+    isHireable: { github: user.isHireable ?? false },
+    url: { github: user.url ?? `https://github.com/${user.login ?? ''}` },
+    bio: { github: user.bio ?? '' },
+    location: { github: user.location ?? '' },
+    avatarUrl: { github: user.avatarUrl ?? '' },
+    company: { github: user.company ?? '' },
+  }
+  if (user.websiteUrl) {
+    attributes.websiteUrl = { github: user.websiteUrl }
+  }
+  return attributes
 }
 
 function toOrganizations(user: GithubUserNode): GithubOrganization[] {

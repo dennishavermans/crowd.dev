@@ -31,7 +31,7 @@ async function runForksSync(ctx: SyncContext): Promise<void> {
       since = forks[forks.length - 1].createdAt
     }
 
-    cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null
+    cursor = pageInfo.endCursor ?? cursor
     await ctx.commitWatermark({ phase: 'incremental', since, cursor })
 
     if (!pageInfo.hasNextPage) {

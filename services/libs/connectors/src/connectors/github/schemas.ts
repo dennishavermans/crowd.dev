@@ -10,15 +10,18 @@ const identitySchema = z.object({
   sourceId: z.string(),
 })
 
+const githubScoped = <T extends z.ZodTypeAny>(value: T) => z.object({ github: value })
+
 const memberAttributesSchema = z.object({
-  isHireable: z.boolean(),
-  url: z.string(),
-  bio: z.string(),
-  location: z.string(),
-  avatarUrl: z.string(),
-  company: z.string(),
-  isBot: z.boolean(),
-  websiteUrl: z.string().optional(),
+  isHireable: githubScoped(z.boolean()).optional(),
+  url: githubScoped(z.string()).optional(),
+  bio: githubScoped(z.string()).optional(),
+  location: githubScoped(z.string()).optional(),
+  avatarUrl: githubScoped(z.string()).optional(),
+  company: githubScoped(z.string()).optional(),
+  websiteUrl: githubScoped(z.string()).optional(),
+  sourceId: githubScoped(z.string()).optional(),
+  isBot: githubScoped(z.boolean()).optional(),
 })
 
 const organizationIdentitySchema = z.object({
