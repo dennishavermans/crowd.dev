@@ -85,6 +85,7 @@ export async function recordRunSuccess(
          "lastRunAt" = now(),
          "lastSuccessAt" = now(),
          "consecutiveFailures" = 0,
+         "lastErrorClass" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
     { id, watermark: JSON.stringify(data.watermark), emittedCount: data.emittedCount },
@@ -96,6 +97,7 @@ export async function recordRunPartial(
   id: string,
   progress: ISyncRunSuccess,
   resumeAt: Date,
+  errorClass: string,
 ): Promise<void> {
   await qx.result(
     `UPDATE integration.sync_units
@@ -103,6 +105,7 @@ export async function recordRunPartial(
          "emittedCount" = $(emittedCount),
          "nextRunAt" = $(resumeAt),
          "lastRunAt" = now(),
+         "lastErrorClass" = $(errorClass),
          "lockedAt" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
@@ -111,7 +114,26 @@ export async function recordRunPartial(
       watermark: JSON.stringify(progress.watermark),
       emittedCount: progress.emittedCount,
       resumeAt,
+      errorClass,
     },
+  )
+}
+
+export async function parkUnit(
+  qx: QueryExecutor,
+  id: string,
+  resumeAt: Date,
+  errorClass: string,
+): Promise<void> {
+  await qx.result(
+    `UPDATE integration.sync_units
+     SET "nextRunAt" = $(resumeAt),
+         "lastRunAt" = now(),
+         "lastErrorClass" = $(errorClass),
+         "lockedAt" = NULL,
+         "updatedAt" = now()
+     WHERE id = $(id)`,
+    { id, resumeAt, errorClass },
   )
 }
 

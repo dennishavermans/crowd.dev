@@ -12,10 +12,10 @@ import {
 import type { Emitter, SyncContext } from '@crowd/connectors'
 import {
   getUnitById,
+  parkUnit,
   recordRunFailure,
   recordRunPartial,
   recordRunSuccess,
-  rescheduleUnit,
 } from '@crowd/data-access-layer/src/connectors'
 import { fetchIntegrationById } from '@crowd/data-access-layer/src/integrations'
 import IntegrationStreamRepository from '@crowd/data-access-layer/src/old/apps/integration_stream_worker/integrationStream.repo'
@@ -120,9 +120,10 @@ export async function executeSync(unitId: string): Promise<void> {
           unitId,
           { watermark: committedWatermark, emittedCount: emitter.emittedCount() },
           resumeAt,
+          err.errorClass,
         )
       } else {
-        await rescheduleUnit(qx, unitId, resumeAt)
+        await parkUnit(qx, unitId, resumeAt, err.errorClass)
       }
       log.info({ resumeAt }, 'sync run rate-limit parked')
       return
