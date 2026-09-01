@@ -1,25 +1,22 @@
+import { mapWithConcurrency } from '../../../concurrency'
 import type { SyncContext, SyncDefinition } from '../../../types'
 import { githubGraphql } from '../gql'
 import type { PrTimelineItem, PrTimelinePage, PullRequestNode } from '../graphql/pullRequests'
 import { PR_TIMELINE_QUERY } from '../graphql/pullRequests'
 import { toPullRequestActivities } from '../mappers/pullRequest'
+import { ITEM_FETCH_CONCURRENCY } from '../paging'
 import { runDualPhasePrSync } from '../prWalk'
 import { githubActivitySchema } from '../schemas'
 
-const TIMELINE_BATCH_SIZE = 50
+const TIMELINE_PAGE_SIZE = 50
 
-async function drainRemainingTimeline(
-  ctx: SyncContext,
-  prId: string,
-  startCursor: string | null,
-): Promise<(PrTimelineItem | null)[]> {
+async function fetchTimeline(ctx: SyncContext, prId: string): Promise<(PrTimelineItem | null)[]> {
   const items: (PrTimelineItem | null)[] = []
-  let cursor = startCursor
-  let hasMore = true
-  while (hasMore) {
+  let cursor: string | null = null
+  do {
     const data = await githubGraphql<PrTimelinePage>(ctx.http, PR_TIMELINE_QUERY, {
       ids: [prId],
-      first: TIMELINE_BATCH_SIZE,
+      first: TIMELINE_PAGE_SIZE,
       after: cursor,
     })
     const timeline = data.nodes[0]?.timelineItems
@@ -27,39 +24,27 @@ async function drainRemainingTimeline(
       break
     }
     items.push(...timeline.nodes)
-    hasMore = timeline.pageInfo.hasNextPage
-    cursor = timeline.pageInfo.endCursor
-  }
+    cursor = timeline.pageInfo.hasNextPage ? timeline.pageInfo.endCursor : null
+  } while (cursor)
   return items
 }
 
 async function emitPullRequests(ctx: SyncContext, pullRequests: PullRequestNode[]): Promise<void> {
-  for (let i = 0; i < pullRequests.length; i += TIMELINE_BATCH_SIZE) {
-    const batch = pullRequests.slice(i, i + TIMELINE_BATCH_SIZE)
-    const timelineData = await githubGraphql<PrTimelinePage>(ctx.http, PR_TIMELINE_QUERY, {
-      ids: batch.map((pr) => pr.id),
-      first: TIMELINE_BATCH_SIZE,
-      after: null,
-    })
+  const timelines = await mapWithConcurrency(pullRequests, ITEM_FETCH_CONCURRENCY, (pr) =>
+    fetchTimeline(ctx, pr.id),
+  )
 
-    const timelinesByPrId = new Map<string, (PrTimelineItem | null)[]>()
-    for (const node of timelineData.nodes) {
-      if (!node?.id) {
-        continue
-      }
-      const items = [...(node.timelineItems?.nodes ?? [])]
-      if (node.timelineItems?.pageInfo.hasNextPage) {
-        items.push(
-          ...(await drainRemainingTimeline(ctx, node.id, node.timelineItems.pageInfo.endCursor)),
-        )
-      }
-      timelinesByPrId.set(node.id, items)
+  pullRequests.forEach((pr, index) => {
+    const hasMergedEvent = timelines[index].some((item) => item?.__typename === 'MergedEvent')
+    if (pr.state === 'MERGED' && !hasMergedEvent) {
+      ctx.log.warn(
+        { prId: pr.id, prNumber: pr.number, itemCount: timelines[index].length },
+        'merged pr timeline missing MergedEvent',
+      )
     }
+  })
 
-    await ctx.emit(
-      batch.flatMap((pr) => toPullRequestActivities(pr, timelinesByPrId.get(pr.id) ?? [])),
-    )
-  }
+  await ctx.emit(pullRequests.flatMap((pr, index) => toPullRequestActivities(pr, timelines[index])))
 }
 
 async function runPullRequestsSync(ctx: SyncContext): Promise<void> {

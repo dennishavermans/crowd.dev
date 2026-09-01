@@ -1,3 +1,4 @@
+export * from './concurrency'
 export * from './credentials'
 export * from './emit'
 export * from './http/client'
