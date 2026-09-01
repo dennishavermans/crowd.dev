@@ -26,7 +26,14 @@ SQL >
         ) as "projectCount"
     FROM collections FINAL
     left join
-        collectionsInsightsProjects
+        (
+            SELECT
+                collectionId,
+                insightsProjectId,
+                argMax(deletedAt, (updatedAt, isNull(deletedAt))) AS deletedAt
+            FROM collectionsInsightsProjects
+            GROUP BY collectionId, insightsProjectId
+        ) collectionsInsightsProjects
         on collectionsInsightsProjects.collectionId = collections.id
         and isNull (collectionsInsightsProjects.deletedAt)
     left join

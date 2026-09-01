@@ -75,7 +75,15 @@ SQL >
     SELECT collectionsInsightsProjects.collectionId, insightsProjects_filtered.*
     from insightsProjects_filtered
     join
-        collectionsInsightsProjects final
+        (
+            SELECT
+                collectionId,
+                insightsProjectId,
+                argMax(starred, (updatedAt, isNull(deletedAt))) AS starred,
+                argMax(deletedAt, (updatedAt, isNull(deletedAt))) AS deletedAt
+            FROM collectionsInsightsProjects
+            GROUP BY collectionId, insightsProjectId
+        ) collectionsInsightsProjects
         on collectionsInsightsProjects.insightsProjectId = insightsProjects_filtered.id
     where
         (collectionsInsightsProjects.collectionId in (select id from collections_paginated))

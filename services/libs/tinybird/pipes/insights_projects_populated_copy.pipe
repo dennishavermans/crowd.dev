@@ -10,7 +10,14 @@ DESCRIPTION >
 
 SQL >
     SELECT cip.insightsProjectId, groupArray(c.slug) AS "collectionsSlugs"
-    FROM collectionsInsightsProjects cip FINAL
+    FROM (
+        SELECT
+            collectionId,
+            insightsProjectId,
+            argMax(deletedAt, (updatedAt, isNull(deletedAt))) AS deletedAt
+        FROM collectionsInsightsProjects
+        GROUP BY collectionId, insightsProjectId
+    ) cip
     JOIN collections c FINAL ON c.id = cip.collectionId
     WHERE isNull (c.deletedAt) AND isNull (cip.deletedAt)
     GROUP BY cip.insightsProjectId
