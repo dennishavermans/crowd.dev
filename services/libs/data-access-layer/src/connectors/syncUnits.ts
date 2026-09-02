@@ -164,19 +164,21 @@ export async function recordRunFailure(
   id: string,
   errorClass: string,
   deadLetterAfter: number | null,
+  nextRunAt: Date,
 ): Promise<void> {
   await qx.result(
     `UPDATE integration.sync_units
      SET "consecutiveFailures" = "consecutiveFailures" + 1,
          "lastErrorClass" = $(errorClass),
          "lastRunAt" = now(),
+         "nextRunAt" = $(nextRunAt),
          "lockedAt" = NULL,
          status = CASE WHEN $(deadLetterAfter)::int IS NOT NULL
                         AND "consecutiveFailures" + 1 >= $(deadLetterAfter)
                        THEN 'dead_letter' ELSE status END,
          "updatedAt" = now()
      WHERE id = $(id)`,
-    { id, errorClass, deadLetterAfter },
+    { id, errorClass, deadLetterAfter, nextRunAt },
   )
 }
 

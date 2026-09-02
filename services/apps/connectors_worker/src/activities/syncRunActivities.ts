@@ -5,6 +5,7 @@ import {
   createEmit,
   createHttpClient,
   createTokenPool,
+  findSync,
   getCredential,
   getManifest,
   getSync,
@@ -24,7 +25,7 @@ import { getChildLogger } from '@crowd/logging'
 
 import { svc } from '../main'
 import { RUN_BUDGET_MS } from '../runLimits'
-import { cadenceRunAt, shortDeferRunAt } from '../scheduling'
+import { cadenceRunAt, failureRunAt, shortDeferRunAt } from '../scheduling'
 
 const DEAD_LETTER_AFTER = 5
 const HEARTBEAT_INTERVAL_MS = 10_000
@@ -151,8 +152,13 @@ export async function executeSync(unitId: string): Promise<void> {
     }
     const errorClass = err instanceof ConnectorError ? err.errorClass : 'unknown'
     const deadLetterAfter = errorClass === 'provider.auth' ? DEAD_LETTER_AFTER : null
-    log.error(err, 'sync run failed')
-    await recordRunFailure(qx, unitId, errorClass, deadLetterAfter)
+    const consecutiveFailures = unit.consecutiveFailures + 1
+    const nextRunAt = failureRunAt(
+      consecutiveFailures,
+      findSync(unit.platform, unit.syncName)?.cadenceMinutes ?? null,
+    )
+    log.error(err, { errorClass, consecutiveFailures, nextRunAt }, 'sync run failed')
+    await recordRunFailure(qx, unitId, errorClass, deadLetterAfter, nextRunAt)
     throw err
   } finally {
     clearInterval(heartbeat)

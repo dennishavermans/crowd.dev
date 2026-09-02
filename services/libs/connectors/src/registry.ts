@@ -18,6 +18,10 @@ export function getManifest(platform: string): Manifest {
   return manifest
 }
 
+export function findSync(platform: string, syncName: string): SyncDefinition | undefined {
+  return findManifest(platform)?.syncs.find((s) => s.name === syncName)
+}
+
 export function getSync(platform: string, syncName: string): SyncDefinition {
   const sync = getManifest(platform).syncs.find((s) => s.name === syncName)
   if (!sync) {
