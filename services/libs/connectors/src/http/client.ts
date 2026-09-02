@@ -36,7 +36,10 @@ export interface HttpClientDeps {
 
 export interface ConnectorHttp {
   request<T>(config: AxiosRequestConfig): Promise<T>
+  requestCount(): number
 }
+
+type CountingHttpClientDeps = HttpClientDeps & { countRequest: () => void }
 
 const MAX_ATTEMPTS = 3
 const BACKOFF_BASE_MS = 1000
@@ -44,12 +47,23 @@ const RATE_LIMIT_FALLBACK_MS = 60_000
 const DEFAULT_TIMEOUT_MS = 60_000
 
 export function createHttpClient(deps: HttpClientDeps): ConnectorHttp {
+  let requests = 0
+  const countingDeps: CountingHttpClientDeps = {
+    ...deps,
+    countRequest: () => {
+      requests += 1
+    },
+  }
   return {
-    request: <T>(config: AxiosRequestConfig) => requestWithRetry<T>(deps, config),
+    request: <T>(config: AxiosRequestConfig) => requestWithRetry<T>(countingDeps, config),
+    requestCount: () => requests,
   }
 }
 
-async function requestWithRetry<T>(deps: HttpClientDeps, config: AxiosRequestConfig): Promise<T> {
+async function requestWithRetry<T>(
+  deps: CountingHttpClientDeps,
+  config: AxiosRequestConfig,
+): Promise<T> {
   let lastError: ConnectorError = new ProviderUnavailableError()
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -70,7 +84,7 @@ async function requestWithRetry<T>(deps: HttpClientDeps, config: AxiosRequestCon
 }
 
 async function attemptRequest<T>(
-  deps: HttpClientDeps,
+  deps: CountingHttpClientDeps,
   config: AxiosRequestConfig,
   allowTokenRotation: boolean,
 ): Promise<T> {
@@ -111,7 +125,7 @@ async function attemptRequest<T>(
 }
 
 async function send<T>(
-  deps: HttpClientDeps,
+  deps: CountingHttpClientDeps,
   config: AxiosRequestConfig,
   token: IPooledToken,
 ): Promise<AxiosResponse<T>> {
@@ -121,6 +135,7 @@ async function send<T>(
     ...applyToken(config, token),
     validateStatus: () => true,
   }
+  deps.countRequest()
   try {
     return await axios.request<T>(authenticatedConfig)
   } catch (err) {
