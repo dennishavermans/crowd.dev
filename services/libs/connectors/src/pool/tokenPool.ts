@@ -196,7 +196,7 @@ export function createTokenPool(
       const states = await readStates()
       const healthy = [...states.entries()].filter(([, state]) => isHealthy(state, nowMs))
       if (healthy.length === 0) {
-        return true
+        return states.size === 0
       }
       let pooledRemaining = 0
       for (const [id, state] of healthy) {
@@ -224,7 +224,7 @@ export function createTokenPool(
     async seed(tokenId: string, value: string): Promise<void> {
       const json = await redis.hGet(tokensKey, tokenId)
       const state = json ? (JSON.parse(json) as ITokenState) : null
-      const next = state && state.value === value ? { ...state, value } : { value }
+      const next = state ? { ...state, value } : { value }
       await redis.hSet(tokensKey, tokenId, JSON.stringify(next))
       await redis.zAdd(lruKey, { score: 0, value: tokenId }, { NX: true })
     },
