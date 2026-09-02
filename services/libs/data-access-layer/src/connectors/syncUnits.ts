@@ -1,10 +1,24 @@
 import type { QueryExecutor } from '../queryExecutor'
 
-import type { IClaimedUnit, ISyncRunSuccess, ISyncUnit, SyncUnitUpsert } from './types'
+import type {
+  IClaimedUnit,
+  ISyncRunProgress,
+  ISyncRunSuccess,
+  ISyncUnit,
+  SyncUnitUpsert,
+} from './types'
 
 const MIN_INITIAL_DELAY_SECONDS = 10
 const MAX_INITIAL_DELAY_SECONDS = 900
 const CLAIM_LEASE_MINUTES = 5
+const ERROR_MESSAGE_MAX_LENGTH = 500
+
+function truncateErrorMessage(message: string | null): string | null {
+  if (!message) {
+    return null
+  }
+  return message.slice(0, ERROR_MESSAGE_MAX_LENGTH)
+}
 
 export async function upsertSyncUnits(qx: QueryExecutor, units: SyncUnitUpsert[]): Promise<number> {
   if (units.length === 0) {
@@ -88,6 +102,8 @@ export async function recordRunSuccess(
          "lastSuccessAt" = now(),
          "consecutiveFailures" = 0,
          "lastErrorClass" = NULL,
+         "lastErrorMessage" = NULL,
+         "lastRunComplete" = $(complete),
          "lockedAt" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
@@ -95,6 +111,7 @@ export async function recordRunSuccess(
       id,
       watermark: JSON.stringify(data.watermark),
       emittedCount: data.emittedCount,
+      complete: data.complete,
       nextRunAt,
     },
   )
@@ -103,9 +120,10 @@ export async function recordRunSuccess(
 export async function recordRunPartial(
   qx: QueryExecutor,
   id: string,
-  progress: ISyncRunSuccess,
+  progress: ISyncRunProgress,
   resumeAt: Date,
   errorClass: string,
+  errorMessage: string | null,
 ): Promise<void> {
   await qx.result(
     `UPDATE integration.sync_units
@@ -114,6 +132,8 @@ export async function recordRunPartial(
          "nextRunAt" = $(resumeAt),
          "lastRunAt" = now(),
          "lastErrorClass" = $(errorClass),
+         "lastErrorMessage" = $(errorMessage),
+         "lastRunComplete" = false,
          "lockedAt" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
@@ -123,6 +143,7 @@ export async function recordRunPartial(
       emittedCount: progress.emittedCount,
       resumeAt,
       errorClass,
+      errorMessage: truncateErrorMessage(errorMessage),
     },
   )
 }
@@ -132,16 +153,19 @@ export async function parkUnit(
   id: string,
   resumeAt: Date,
   errorClass: string,
+  errorMessage: string | null,
 ): Promise<void> {
   await qx.result(
     `UPDATE integration.sync_units
      SET "nextRunAt" = $(resumeAt),
          "lastRunAt" = now(),
          "lastErrorClass" = $(errorClass),
+         "lastErrorMessage" = $(errorMessage),
+         "lastRunComplete" = false,
          "lockedAt" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
-    { id, resumeAt, errorClass },
+    { id, resumeAt, errorClass, errorMessage: truncateErrorMessage(errorMessage) },
   )
 }
 
@@ -149,6 +173,7 @@ export async function recordRunFailure(
   qx: QueryExecutor,
   id: string,
   errorClass: string,
+  errorMessage: string | null,
   deadLetterAfter: number | null,
   nextRunAt: Date,
 ): Promise<void> {
@@ -156,6 +181,8 @@ export async function recordRunFailure(
     `UPDATE integration.sync_units
      SET "consecutiveFailures" = "consecutiveFailures" + 1,
          "lastErrorClass" = $(errorClass),
+         "lastErrorMessage" = $(errorMessage),
+         "lastRunComplete" = false,
          "lastRunAt" = now(),
          "nextRunAt" = $(nextRunAt),
          "lockedAt" = NULL,
@@ -164,7 +191,13 @@ export async function recordRunFailure(
                        THEN 'dead_letter' ELSE status END,
          "updatedAt" = now()
      WHERE id = $(id)`,
-    { id, errorClass, deadLetterAfter, nextRunAt },
+    {
+      id,
+      errorClass,
+      errorMessage: truncateErrorMessage(errorMessage),
+      deadLetterAfter,
+      nextRunAt,
+    },
   )
 }
 

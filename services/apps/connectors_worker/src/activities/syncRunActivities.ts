@@ -121,6 +121,7 @@ export async function executeSync(unitId: string): Promise<void> {
       {
         watermark: committedWatermark ?? {},
         emittedCount: emitter.emittedCount(),
+        complete: outcome.complete,
       },
       nextRunAt,
     )
@@ -143,9 +144,10 @@ export async function executeSync(unitId: string): Promise<void> {
           { watermark: committedWatermark, emittedCount: emitter.emittedCount() },
           resumeAt,
           err.errorClass,
+          err.message,
         )
       } else {
-        await parkUnit(qx, unitId, resumeAt, err.errorClass)
+        await parkUnit(qx, unitId, resumeAt, err.errorClass, err.message)
       }
       log.info({ resumeAt, errorClass: err.errorClass }, 'sync run parked')
       return
@@ -157,8 +159,9 @@ export async function executeSync(unitId: string): Promise<void> {
       consecutiveFailures,
       findSync(unit.platform, unit.syncName)?.cadenceMinutes ?? null,
     )
+    const errorMessage = err instanceof Error ? err.message : String(err)
     log.error(err, { errorClass, consecutiveFailures, nextRunAt }, 'sync run failed')
-    await recordRunFailure(qx, unitId, errorClass, deadLetterAfter, nextRunAt)
+    await recordRunFailure(qx, unitId, errorClass, errorMessage, deadLetterAfter, nextRunAt)
     throw err
   } finally {
     clearInterval(heartbeat)

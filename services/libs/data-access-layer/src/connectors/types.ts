@@ -14,6 +14,8 @@ export interface ISyncUnit {
   lastSuccessAt: string | null
   consecutiveFailures: number
   lastErrorClass: string | null
+  lastErrorMessage: string | null
+  lastRunComplete: boolean | null
   watermark: Record<string, unknown> | null
   emittedCount: number | null
 }
@@ -28,7 +30,11 @@ export type IClaimedUnit = Pick<
   'id' | 'integrationId' | 'platform' | 'syncName' | 'channelId' | 'channelName'
 >
 
-export interface ISyncRunSuccess {
+export interface ISyncRunProgress {
   watermark: Record<string, unknown>
   emittedCount: number
+}
+
+export interface ISyncRunSuccess extends ISyncRunProgress {
+  complete: boolean
 }
