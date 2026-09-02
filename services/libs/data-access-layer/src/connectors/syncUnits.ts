@@ -141,14 +141,15 @@ export async function recordRunFailure(
   qx: QueryExecutor,
   id: string,
   errorClass: string,
-  deadLetterAfter: number,
+  deadLetterAfter: number | null,
 ): Promise<void> {
   await qx.result(
     `UPDATE integration.sync_units
      SET "consecutiveFailures" = "consecutiveFailures" + 1,
          "lastErrorClass" = $(errorClass),
          "lastRunAt" = now(),
-         status = CASE WHEN "consecutiveFailures" + 1 >= $(deadLetterAfter)
+         status = CASE WHEN $(deadLetterAfter)::int IS NOT NULL
+                        AND "consecutiveFailures" + 1 >= $(deadLetterAfter)
                        THEN 'dead_letter' ELSE status END,
          "updatedAt" = now()
      WHERE id = $(id)`,

@@ -27,6 +27,9 @@ import { svc } from '../main'
 const DEAD_LETTER_AFTER = 5
 const HEARTBEAT_INTERVAL_MS = 10_000
 const RATE_LIMIT_FALLBACK_MS = 60_000
+const UNAVAILABLE_PARK_MS = 300_000
+
+const PARKED_ERROR_CLASSES = ['provider.rate_limit', 'provider.unavailable'] as const
 
 export async function executeSync(unitId: string): Promise<void> {
   const qx = dbStoreQx(svc.postgres.writer)
@@ -112,8 +115,13 @@ export async function executeSync(unitId: string): Promise<void> {
     })
     log.info({ emittedCount: emitter.emittedCount() }, 'sync run succeeded')
   } catch (err) {
-    if (err instanceof ConnectorError && err.errorClass === 'provider.rate_limit') {
-      const resumeAt = err.options?.resumeAt ?? new Date(Date.now() + RATE_LIMIT_FALLBACK_MS)
+    if (
+      err instanceof ConnectorError &&
+      (PARKED_ERROR_CLASSES as readonly string[]).includes(err.errorClass)
+    ) {
+      const fallbackMs =
+        err.errorClass === 'provider.rate_limit' ? RATE_LIMIT_FALLBACK_MS : UNAVAILABLE_PARK_MS
+      const resumeAt = err.options?.resumeAt ?? new Date(Date.now() + fallbackMs)
       if (emitter && committedWatermark) {
         await recordRunPartial(
           qx,
@@ -125,12 +133,13 @@ export async function executeSync(unitId: string): Promise<void> {
       } else {
         await parkUnit(qx, unitId, resumeAt, err.errorClass)
       }
-      log.info({ resumeAt }, 'sync run rate-limit parked')
+      log.info({ resumeAt, errorClass: err.errorClass }, 'sync run parked')
       return
     }
     const errorClass = err instanceof ConnectorError ? err.errorClass : 'unknown'
+    const deadLetterAfter = errorClass === 'provider.auth' ? DEAD_LETTER_AFTER : null
     log.error(err, 'sync run failed')
-    await recordRunFailure(qx, unitId, errorClass, DEAD_LETTER_AFTER)
+    await recordRunFailure(qx, unitId, errorClass, deadLetterAfter)
     throw err
   } finally {
     clearInterval(heartbeat)
