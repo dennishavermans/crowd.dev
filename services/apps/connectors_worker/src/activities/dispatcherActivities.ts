@@ -1,17 +1,12 @@
 import { createTokenPool, findManifest, mapWithConcurrency } from '@crowd/connectors'
-import {
-  claimDueUnits,
-  guardUnitLease,
-  rescheduleUnit,
-} from '@crowd/data-access-layer/src/connectors'
+import { claimDueUnits, rescheduleUnit } from '@crowd/data-access-layer/src/connectors'
 import type { IClaimedUnit } from '@crowd/data-access-layer/src/connectors'
 import { dbStoreQx } from '@crowd/data-access-layer/src/queryExecutor'
 import { RedisCache } from '@crowd/redis'
 import { WorkflowIdConflictPolicy, WorkflowIdReusePolicy } from '@crowd/temporal'
 
 import { svc } from '../main'
-import { LEASE_GUARD_MS } from '../runLimits'
-import { shortDeferRunAt } from '../scheduling'
+import { runningProbeRunAt, shortDeferRunAt } from '../scheduling'
 import type { IAdmissionResult, StartRunResult } from '../types'
 
 const TASK_QUEUE = 'connectors'
@@ -76,14 +71,25 @@ export async function startRun(unit: IClaimedUnit): Promise<StartRunResult> {
     return 'started'
   } catch (err) {
     if (err instanceof Error && err.name === 'WorkflowExecutionAlreadyStartedError') {
+      await backOffRunningUnit(unit)
       return 'alreadyRunning'
     }
     throw err
   }
 }
 
-export async function guardLease(unitId: string): Promise<void> {
-  await guardUnitLease(dbStoreQx(svc.postgres.writer), unitId, LEASE_GUARD_MS)
+async function backOffRunningUnit(unit: IClaimedUnit): Promise<void> {
+  const nextRunAt = await runningSince(unit)
+    .then(runningProbeRunAt)
+    .catch(() => shortDeferRunAt())
+
+  await rescheduleUnit(dbStoreQx(svc.postgres.writer), unit.id, nextRunAt)
+}
+
+async function runningSince(unit: IClaimedUnit): Promise<Date> {
+  const description = await svc.temporal.workflow.getHandle(syncRunWorkflowId(unit)).describe()
+
+  return description.startTime
 }
 
 export async function touchHeartbeat(): Promise<void> {

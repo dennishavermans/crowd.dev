@@ -73,20 +73,6 @@ export async function rescheduleUnit(
   )
 }
 
-export async function guardUnitLease(
-  qx: QueryExecutor,
-  id: string,
-  guardMs: number,
-): Promise<void> {
-  await qx.result(
-    `UPDATE integration.sync_units
-     SET "nextRunAt" = GREATEST("nextRunAt", now() + $(guardMs) * interval '1 millisecond'),
-         "updatedAt" = now()
-     WHERE id = $(id)`,
-    { id, guardMs },
-  )
-}
-
 export async function recordRunSuccess(
   qx: QueryExecutor,
   id: string,
