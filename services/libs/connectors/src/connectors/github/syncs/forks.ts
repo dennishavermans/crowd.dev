@@ -1,19 +1,19 @@
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type { ForkNode, ForksPage } from '../graphql/forks'
 import { FORKS_QUERY } from '../graphql/forks'
 import { toFork } from '../mappers/fork'
-import { MAX_PAGES_PER_RUN, PAGE_SIZE, parseRepoChannel, readWatermark } from '../paging'
+import { PAGE_SIZE, parseRepoChannel, readWatermark } from '../paging'
 import { githubActivitySchema } from '../schemas'
 
-async function runForksSync(ctx: SyncContext): Promise<void> {
+async function runForksSync(ctx: SyncContext): Promise<SyncOutcome> {
   const { owner, repo } = parseRepoChannel(ctx.channel.channelName)
   const watermark = readWatermark(ctx.watermark)
 
   let since = watermark.since
   let cursor = watermark.cursor
 
-  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+  while (ctx.hasRunBudget()) {
     const data = await githubGraphql<ForksPage>(ctx.http, FORKS_QUERY, {
       owner,
       repo,
@@ -35,9 +35,11 @@ async function runForksSync(ctx: SyncContext): Promise<void> {
     await ctx.commitWatermark({ phase: 'incremental', since, cursor })
 
     if (!pageInfo.hasNextPage) {
-      return
+      return { complete: true }
     }
   }
+
+  return { complete: false }
 }
 
 export const forksSync: SyncDefinition = {

@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from '../../../concurrency'
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type { PrCommentNode, PrCommentsBatchPage } from '../graphql/pullRequestChildren'
 import { COMMENTS_FOR_PRS_QUERY } from '../graphql/pullRequestChildren'
@@ -33,8 +33,8 @@ async function fetchComments(ctx: SyncContext, prId: string): Promise<PrCommentN
   return comments
 }
 
-async function runPullRequestCommentsSync(ctx: SyncContext): Promise<void> {
-  await runDualPhasePrSync(ctx, async (prs, sinceDate) => {
+async function runPullRequestCommentsSync(ctx: SyncContext): Promise<SyncOutcome> {
+  return runDualPhasePrSync(ctx, async (prs, sinceDate) => {
     const commentsPerPr = await mapWithConcurrency(prs, ITEM_FETCH_CONCURRENCY, (pr) =>
       fetchComments(ctx, pr.id),
     )

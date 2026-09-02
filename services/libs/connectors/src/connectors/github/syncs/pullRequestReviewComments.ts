@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from '../../../concurrency'
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type {
   ReviewThreadNode,
@@ -68,8 +68,8 @@ async function fetchThreadComments(
   return comments
 }
 
-async function runPullRequestReviewCommentsSync(ctx: SyncContext): Promise<void> {
-  await runDualPhasePrSync(ctx, async (prs, sinceDate) => {
+async function runPullRequestReviewCommentsSync(ctx: SyncContext): Promise<SyncOutcome> {
+  return runDualPhasePrSync(ctx, async (prs, sinceDate) => {
     const threadsPerPr = await mapWithConcurrency(prs, ITEM_FETCH_CONCURRENCY, (pr) =>
       fetchThreads(ctx, pr.id),
     )

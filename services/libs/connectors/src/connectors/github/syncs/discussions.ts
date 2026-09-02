@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from '../../../concurrency'
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type {
   CommentRepliesPage,
@@ -15,20 +15,14 @@ import {
   DISCUSSION_COMMENTS_QUERY,
 } from '../graphql/discussions'
 import { toDiscussionCommentActivity, toDiscussionStartedActivity } from '../mappers/discussion'
-import {
-  ITEM_FETCH_CONCURRENCY,
-  MAX_PAGES_PER_RUN,
-  PAGE_SIZE,
-  parseRepoChannel,
-  readWatermark,
-} from '../paging'
+import { ITEM_FETCH_CONCURRENCY, PAGE_SIZE, parseRepoChannel, readWatermark } from '../paging'
 import type { GithubActivity } from '../schemas'
 import { githubActivitySchema } from '../schemas'
 
 const COMMENTS_PAGE_SIZE = 50
 const REPLIES_PAGE_SIZE = 100
 
-async function runDiscussionsSync(ctx: SyncContext): Promise<void> {
+async function runDiscussionsSync(ctx: SyncContext): Promise<SyncOutcome> {
   const { owner, repo } = parseRepoChannel(ctx.channel.channelName)
   const watermark = readWatermark(ctx.watermark)
 
@@ -105,7 +99,10 @@ async function runDiscussionsSync(ctx: SyncContext): Promise<void> {
 
   // discussions has no filterBy.since; walk UPDATED_AT DESC and stop at the watermark,
   // committing only after the walk so a partial run cannot skip older updates.
-  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+  let firstPage = true
+  let walked = false
+
+  while (ctx.hasRunBudget()) {
     const data = await githubGraphql<DiscussionsPage>(ctx.http, DISCUSSIONS_QUERY, {
       owner,
       repo,
@@ -119,9 +116,10 @@ async function runDiscussionsSync(ctx: SyncContext): Promise<void> {
       ? discussions.filter((discussion) => new Date(discussion.updatedAt) >= sinceDate)
       : discussions
 
-    if (page === 0 && discussions.length > 0) {
+    if (firstPage && discussions.length > 0) {
       newestUpdatedAt = discussions[0].updatedAt
     }
+    firstPage = false
 
     if (fresh.length > 0) {
       const batches = await mapWithConcurrency(
@@ -135,11 +133,17 @@ async function runDiscussionsSync(ctx: SyncContext): Promise<void> {
     const reachedWatermark = fresh.length < discussions.length
     cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null
     if (reachedWatermark || !pageInfo.hasNextPage) {
+      walked = true
       break
     }
   }
 
+  if (!walked) {
+    return { complete: false }
+  }
+
   await ctx.commitWatermark({ phase: 'incremental', since: newestUpdatedAt, cursor: null })
+  return { complete: true }
 }
 
 export const discussionsSync: SyncDefinition = {

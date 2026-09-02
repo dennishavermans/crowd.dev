@@ -19,7 +19,7 @@ export async function dispatcher(): Promise<void> {
   for (const unit of admitted) {
     try {
       await activity.startRun(unit)
-      await activity.reschedule(unit.id, unit.platform, unit.syncName)
+      await activity.guardLease(unit.id)
     } catch (err) {
       log.error('failed to dispatch sync unit', { unitId: unit.id, err })
     }

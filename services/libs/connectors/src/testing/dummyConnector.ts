@@ -14,6 +14,7 @@ export const dummyConnector: Manifest = {
       run: async (ctx: SyncContext) => {
         await ctx.emit(Array.from({ length: TICK_COUNT }, (_, index) => ({ tick: index })))
         await ctx.commitWatermark({ since: new Date().toISOString() })
+        return { complete: true }
       },
     },
   ],

@@ -1,19 +1,22 @@
-import { createTokenPool, findManifest, getSync, mapWithConcurrency } from '@crowd/connectors'
-import { claimDueUnits, rescheduleUnit } from '@crowd/data-access-layer/src/connectors'
+import { createTokenPool, findManifest, mapWithConcurrency } from '@crowd/connectors'
+import {
+  claimDueUnits,
+  guardUnitLease,
+  rescheduleUnit,
+} from '@crowd/data-access-layer/src/connectors'
 import type { IClaimedUnit } from '@crowd/data-access-layer/src/connectors'
 import { dbStoreQx } from '@crowd/data-access-layer/src/queryExecutor'
 import { RedisCache } from '@crowd/redis'
 import { WorkflowIdConflictPolicy, WorkflowIdReusePolicy } from '@crowd/temporal'
 
 import { svc } from '../main'
+import { LEASE_GUARD_MS } from '../runLimits'
+import { shortDeferRunAt } from '../scheduling'
 import type { IAdmissionResult, StartRunResult } from '../types'
 
 const TASK_QUEUE = 'connectors'
 const HEARTBEAT_TTL_SECONDS = 300
-const CADENCE_JITTER_RATIO = 0.1
 const DEFAULT_RUN_ESTIMATE = 50
-const DEFER_MIN_MS = 30_000
-const DEFER_JITTER_MS = 60_000
 const BUDGET_PROBE_CONCURRENCY = 10
 const CHANNEL_LABEL_MAX_LENGTH = 80
 
@@ -36,8 +39,7 @@ export async function admitByBudget(units: IClaimedUnit[]): Promise<IAdmissionRe
 }
 
 export async function deferUnit(unitId: string): Promise<void> {
-  const delayMs = DEFER_MIN_MS + Math.random() * DEFER_JITTER_MS
-  await rescheduleUnit(dbStoreQx(svc.postgres.writer), unitId, new Date(Date.now() + delayMs))
+  await rescheduleUnit(dbStoreQx(svc.postgres.writer), unitId, shortDeferRunAt())
 }
 
 function channelLabel(channelName: string): string {
@@ -80,16 +82,8 @@ export async function startRun(unit: IClaimedUnit): Promise<StartRunResult> {
   }
 }
 
-export async function reschedule(
-  unitId: string,
-  platform: string,
-  syncName: string,
-): Promise<void> {
-  const { cadenceMinutes } = getSync(platform, syncName)
-  const jitterMinutes = cadenceMinutes * CADENCE_JITTER_RATIO * (Math.random() * 2 - 1)
-  const nextRunAt = new Date(Date.now() + (cadenceMinutes + jitterMinutes) * 60_000)
-
-  await rescheduleUnit(dbStoreQx(svc.postgres.writer), unitId, nextRunAt)
+export async function guardLease(unitId: string): Promise<void> {
+  await guardUnitLease(dbStoreQx(svc.postgres.writer), unitId, LEASE_GUARD_MS)
 }
 
 export async function touchHeartbeat(): Promise<void> {

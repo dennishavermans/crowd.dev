@@ -1,4 +1,4 @@
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type { PrCommitNode, PrCommitsPage } from '../graphql/pullRequestChildren'
 import { PR_COMMITS_QUERY } from '../graphql/pullRequestChildren'
@@ -9,10 +9,10 @@ import { githubActivitySchema } from '../schemas'
 
 const COMMITS_PAGE_SIZE = 50
 
-async function runPullRequestCommitsSync(ctx: SyncContext): Promise<void> {
+async function runPullRequestCommitsSync(ctx: SyncContext): Promise<SyncOutcome> {
   const { owner, repo } = parseRepoChannel(ctx.channel.channelName)
 
-  await runDualPhasePrSync(ctx, async (prs) => {
+  return runDualPhasePrSync(ctx, async (prs) => {
     for (const pullRequest of prs) {
       let cursor: string | null = null
       let hasMore = true

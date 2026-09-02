@@ -28,15 +28,20 @@ export interface SyncContext {
   watermark: Record<string, unknown> | null
   emit: (records: unknown[]) => Promise<void>
   commitWatermark: (watermark: Record<string, unknown>) => Promise<void>
+  hasRunBudget: () => boolean
   http: ConnectorHttp
   log: Logger
+}
+
+export interface SyncOutcome {
+  complete: boolean
 }
 
 export interface SyncDefinition {
   name: string
   cadenceMinutes: number
   schema: ZodType<Record<string, unknown>>
-  run: (ctx: SyncContext) => Promise<void>
+  run: (ctx: SyncContext) => Promise<SyncOutcome>
 }
 
 export interface Manifest {

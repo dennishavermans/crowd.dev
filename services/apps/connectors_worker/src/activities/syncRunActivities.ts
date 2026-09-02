@@ -23,6 +23,8 @@ import { dbStoreQx } from '@crowd/data-access-layer/src/queryExecutor'
 import { getChildLogger } from '@crowd/logging'
 
 import { svc } from '../main'
+import { RUN_BUDGET_MS } from '../runLimits'
+import { cadenceRunAt, shortDeferRunAt } from '../scheduling'
 
 const DEAD_LETTER_AFTER = 5
 const HEARTBEAT_INTERVAL_MS = 10_000
@@ -58,6 +60,7 @@ export async function executeSync(unitId: string): Promise<void> {
 
   let emitter: Emitter | null = null
   let committedWatermark = unit.watermark
+  const runDeadline = Date.now() + RUN_BUDGET_MS
 
   try {
     const integration = await fetchIntegrationById(qx, unit.integrationId)
@@ -103,17 +106,27 @@ export async function executeSync(unitId: string): Promise<void> {
       commitWatermark: async (watermark) => {
         committedWatermark = watermark
       },
+      hasRunBudget: () => Date.now() < runDeadline,
       http,
       log,
     }
 
-    await sync.run(ctx)
+    const outcome = await sync.run(ctx)
+    const nextRunAt = outcome.complete ? cadenceRunAt(sync.cadenceMinutes) : shortDeferRunAt()
 
-    await recordRunSuccess(qx, unitId, {
-      watermark: committedWatermark ?? {},
-      emittedCount: emitter.emittedCount(),
-    })
-    log.info({ emittedCount: emitter.emittedCount() }, 'sync run succeeded')
+    await recordRunSuccess(
+      qx,
+      unitId,
+      {
+        watermark: committedWatermark ?? {},
+        emittedCount: emitter.emittedCount(),
+      },
+      nextRunAt,
+    )
+    log.info(
+      { emittedCount: emitter.emittedCount(), complete: outcome.complete, nextRunAt },
+      'sync run succeeded',
+    )
   } catch (err) {
     if (
       err instanceof ConnectorError &&

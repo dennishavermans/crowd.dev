@@ -4,7 +4,6 @@ export interface GithubWatermark {
   cursor: string | null
 }
 
-export const MAX_PAGES_PER_RUN = Number.POSITIVE_INFINITY
 export const PAGE_SIZE = 100
 // GitHub GraphQL silently omits timeline/connection items from heavy nodes(ids:) batches
 // (no error, pageInfo claims completeness) — fetch per item, bounded by this concurrency.

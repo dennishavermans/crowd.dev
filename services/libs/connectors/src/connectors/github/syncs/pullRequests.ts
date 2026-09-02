@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from '../../../concurrency'
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type { PrTimelineItem, PrTimelinePage, PullRequestNode } from '../graphql/pullRequests'
 import { PR_TIMELINE_QUERY } from '../graphql/pullRequests'
@@ -47,8 +47,8 @@ async function emitPullRequests(ctx: SyncContext, pullRequests: PullRequestNode[
   await ctx.emit(pullRequests.flatMap((pr, index) => toPullRequestActivities(pr, timelines[index])))
 }
 
-async function runPullRequestsSync(ctx: SyncContext): Promise<void> {
-  await runDualPhasePrSync(ctx, (prs) => emitPullRequests(ctx, prs))
+async function runPullRequestsSync(ctx: SyncContext): Promise<SyncOutcome> {
+  return runDualPhasePrSync(ctx, (prs) => emitPullRequests(ctx, prs))
 }
 
 export const pullRequestsSync: SyncDefinition = {

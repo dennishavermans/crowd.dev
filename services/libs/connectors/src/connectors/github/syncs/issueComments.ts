@@ -1,4 +1,4 @@
-import type { SyncContext, SyncDefinition } from '../../../types'
+import type { SyncContext, SyncDefinition, SyncOutcome } from '../../../types'
 import { githubGraphql } from '../gql'
 import type {
   IssueCommentNode,
@@ -13,7 +13,7 @@ import {
   ISSUE_COMMENTS_QUERY,
 } from '../graphql/issues'
 import { toIssueComment } from '../mappers/issueComment'
-import { MAX_PAGES_PER_RUN, PAGE_SIZE, parseRepoChannel, readWatermark } from '../paging'
+import { PAGE_SIZE, parseRepoChannel, readWatermark } from '../paging'
 import { githubActivitySchema } from '../schemas'
 
 const ISSUE_BATCH_SIZE = 15
@@ -22,7 +22,7 @@ const COMMENTS_BATCH_PAGE_SIZE = 25
 // (nango workaround: nango-integrations/github/syncs/issue-comments.ts)
 const COMMENTS_PAGINATED_PAGE_SIZE = 5
 
-async function runIssueCommentsSync(ctx: SyncContext): Promise<void> {
+async function runIssueCommentsSync(ctx: SyncContext): Promise<SyncOutcome> {
   const { owner, repo } = parseRepoChannel(ctx.channel.channelName)
   const watermark = readWatermark(ctx.watermark)
 
@@ -68,7 +68,7 @@ async function runIssueCommentsSync(ctx: SyncContext): Promise<void> {
     }
   }
 
-  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+  while (ctx.hasRunBudget()) {
     const data = await githubGraphql<IssuesPage>(ctx.http, ISSUES_QUERY, {
       owner,
       repo,
@@ -118,9 +118,11 @@ async function runIssueCommentsSync(ctx: SyncContext): Promise<void> {
     await ctx.commitWatermark({ phase: 'incremental', since, cursor: null })
 
     if (!pageInfo.hasNextPage) {
-      return
+      return { complete: true }
     }
   }
+
+  return { complete: false }
 }
 
 export const issueCommentsSync: SyncDefinition = {

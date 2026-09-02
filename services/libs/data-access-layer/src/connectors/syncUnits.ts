@@ -73,22 +73,44 @@ export async function rescheduleUnit(
   )
 }
 
+export async function guardUnitLease(
+  qx: QueryExecutor,
+  id: string,
+  guardMs: number,
+): Promise<void> {
+  await qx.result(
+    `UPDATE integration.sync_units
+     SET "nextRunAt" = GREATEST("nextRunAt", now() + $(guardMs) * interval '1 millisecond'),
+         "updatedAt" = now()
+     WHERE id = $(id)`,
+    { id, guardMs },
+  )
+}
+
 export async function recordRunSuccess(
   qx: QueryExecutor,
   id: string,
   data: ISyncRunSuccess,
+  nextRunAt: Date,
 ): Promise<void> {
   await qx.result(
     `UPDATE integration.sync_units
      SET watermark = $(watermark)::jsonb,
          "emittedCount" = $(emittedCount),
+         "nextRunAt" = $(nextRunAt),
          "lastRunAt" = now(),
          "lastSuccessAt" = now(),
          "consecutiveFailures" = 0,
          "lastErrorClass" = NULL,
+         "lockedAt" = NULL,
          "updatedAt" = now()
      WHERE id = $(id)`,
-    { id, watermark: JSON.stringify(data.watermark), emittedCount: data.emittedCount },
+    {
+      id,
+      watermark: JSON.stringify(data.watermark),
+      emittedCount: data.emittedCount,
+      nextRunAt,
+    },
   )
 }
 
@@ -148,6 +170,7 @@ export async function recordRunFailure(
      SET "consecutiveFailures" = "consecutiveFailures" + 1,
          "lastErrorClass" = $(errorClass),
          "lastRunAt" = now(),
+         "lockedAt" = NULL,
          status = CASE WHEN $(deadLetterAfter)::int IS NOT NULL
                         AND "consecutiveFailures" + 1 >= $(deadLetterAfter)
                        THEN 'dead_letter' ELSE status END,

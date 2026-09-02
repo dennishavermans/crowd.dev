@@ -1,9 +1,10 @@
 import { proxyActivities } from '@temporalio/workflow'
 
 import type * as activities from '../activities/syncRunActivities'
+import { RUN_START_TO_CLOSE_TIMEOUT_MS } from '../runLimits'
 
 const activity = proxyActivities<typeof activities>({
-  startToCloseTimeout: '30 minutes',
+  startToCloseTimeout: RUN_START_TO_CLOSE_TIMEOUT_MS,
   heartbeatTimeout: '1 minute',
   retry: { maximumAttempts: 1 },
 })

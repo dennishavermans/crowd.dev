@@ -1,9 +1,9 @@
-import type { SyncContext } from '../../types'
+import type { SyncContext, SyncOutcome } from '../../types'
 
 import { githubGraphql } from './gql'
 import type { PullRequestNode, PullRequestsPage } from './graphql/pullRequests'
 import { PULL_REQUESTS_QUERY } from './graphql/pullRequests'
-import { MAX_PAGES_PER_RUN, parseRepoChannel, readWatermark } from './paging'
+import { parseRepoChannel, readWatermark } from './paging'
 
 export const PR_PAGE_SIZE = 50
 
@@ -14,12 +14,12 @@ async function runBackfill(
   owner: string,
   repo: string,
   processPrs: PrPageHandler,
-): Promise<void> {
+): Promise<SyncOutcome> {
   const watermark = readWatermark(ctx.watermark)
   let cursor = watermark.cursor
   let since = watermark.since
 
-  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+  while (ctx.hasRunBudget()) {
     const data = await githubGraphql<PullRequestsPage>(ctx.http, PULL_REQUESTS_QUERY, {
       owner,
       repo,
@@ -38,12 +38,14 @@ async function runBackfill(
 
     if (!pageInfo.hasNextPage) {
       await ctx.commitWatermark({ phase: 'incremental', since, cursor: null })
-      return
+      return { complete: true }
     }
 
     cursor = pageInfo.endCursor
     await ctx.commitWatermark({ phase: 'backfill', since, cursor })
   }
+
+  return { complete: false }
 }
 
 async function runIncremental(
@@ -52,12 +54,12 @@ async function runIncremental(
   repo: string,
   since: string,
   processPrs: PrPageHandler,
-): Promise<void> {
+): Promise<SyncOutcome> {
   const sinceDate = new Date(since)
   let cursor: string | null = null
   let newSince: string | null = null
 
-  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+  while (ctx.hasRunBudget()) {
     const data = await githubGraphql<PullRequestsPage>(ctx.http, PULL_REQUESTS_QUERY, {
       owner,
       repo,
@@ -81,23 +83,24 @@ async function runIncremental(
     const reachedSince = fresh.length < pullRequests.length
     if (reachedSince || !pageInfo.hasNextPage) {
       await ctx.commitWatermark({ phase: 'incremental', since: newSince ?? since, cursor: null })
-      return
+      return { complete: true }
     }
 
     cursor = pageInfo.endCursor
   }
+
+  return { complete: false }
 }
 
 export async function runDualPhasePrSync(
   ctx: SyncContext,
   processPrs: PrPageHandler,
-): Promise<void> {
+): Promise<SyncOutcome> {
   const { owner, repo } = parseRepoChannel(ctx.channel.channelName)
   const watermark = readWatermark(ctx.watermark)
 
   if (watermark.phase === 'incremental' && watermark.since) {
-    await runIncremental(ctx, owner, repo, watermark.since, processPrs)
-    return
+    return runIncremental(ctx, owner, repo, watermark.since, processPrs)
   }
-  await runBackfill(ctx, owner, repo, processPrs)
+  return runBackfill(ctx, owner, repo, processPrs)
 }
