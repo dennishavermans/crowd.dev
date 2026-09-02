@@ -10,7 +10,7 @@ import {
   getManifest,
   getSync,
 } from '@crowd/connectors'
-import type { Emitter, SyncContext } from '@crowd/connectors'
+import type { ConnectorHttp, Emitter, SyncContext } from '@crowd/connectors'
 import {
   getUnitById,
   parkUnit,
@@ -44,10 +44,13 @@ export async function executeSync(unitId: string): Promise<void> {
 
   const activityContext = Context.current()
   const log = getChildLogger('syncRun', svc.log, {
+    workflowId: activityContext.info.workflowExecution.workflowId,
     runId: activityContext.info.workflowExecution.runId,
     unitId: unit.id,
+    integrationId: unit.integrationId,
     platform: unit.platform,
     syncName: unit.syncName,
+    channelId: unit.channelId,
     channelName: unit.channelName,
   })
 
@@ -60,8 +63,24 @@ export async function executeSync(unitId: string): Promise<void> {
   }, HEARTBEAT_INTERVAL_MS)
 
   let emitter: Emitter | null = null
+  let http: ConnectorHttp | null = null
   let committedWatermark = unit.watermark
-  const runDeadline = Date.now() + RUN_BUDGET_MS
+  const startedAt = Date.now()
+  const runDeadline = startedAt + RUN_BUDGET_MS
+
+  const runSummary = (fields: Record<string, unknown>) => ({
+    event: 'sync_run_summary',
+    durationMs: Date.now() - startedAt,
+    emittedCount: emitter?.emittedCount() ?? 0,
+    requestCount: http?.requestCount() ?? 0,
+    complete: null as boolean | null,
+    ...fields,
+  })
+
+  log.info(
+    { event: 'sync_run_started', consecutiveFailures: unit.consecutiveFailures },
+    'sync run started',
+  )
 
   try {
     const integration = await fetchIntegrationById(qx, unit.integrationId)
@@ -80,7 +99,7 @@ export async function executeSync(unitId: string): Promise<void> {
       const credential = await getCredential(qx, unit.integrationId)
       await manifest.seedTokens(credential, pool)
     }
-    const http = createHttpClient({
+    http = createHttpClient({
       acquireToken: pool.acquire,
       parkToken: pool.park,
       quarantineToken: pool.quarantine,
@@ -126,8 +145,8 @@ export async function executeSync(unitId: string): Promise<void> {
       nextRunAt,
     )
     log.info(
-      { emittedCount: emitter.emittedCount(), complete: outcome.complete, nextRunAt },
-      'sync run succeeded',
+      runSummary({ outcome: 'success', complete: outcome.complete, nextRunAt }),
+      'sync run summary',
     )
   } catch (err) {
     if (
@@ -137,6 +156,7 @@ export async function executeSync(unitId: string): Promise<void> {
       const fallbackMs =
         err.errorClass === 'provider.rate_limit' ? RATE_LIMIT_FALLBACK_MS : UNAVAILABLE_PARK_MS
       const resumeAt = err.options?.resumeAt ?? new Date(Date.now() + fallbackMs)
+      const progressCommitted = Boolean(emitter && committedWatermark)
       if (emitter && committedWatermark) {
         await recordRunPartial(
           qx,
@@ -149,7 +169,16 @@ export async function executeSync(unitId: string): Promise<void> {
       } else {
         await parkUnit(qx, unitId, resumeAt, err.errorClass, err.message)
       }
-      log.info({ resumeAt, errorClass: err.errorClass }, 'sync run parked')
+      log.info(
+        runSummary({
+          outcome: 'parked',
+          errorClass: err.errorClass,
+          errorMessage: err.message,
+          nextRunAt: resumeAt,
+          progressCommitted,
+        }),
+        'sync run summary',
+      )
       return
     }
     const errorClass = err instanceof ConnectorError ? err.errorClass : 'unknown'
@@ -160,7 +189,17 @@ export async function executeSync(unitId: string): Promise<void> {
       findSync(unit.platform, unit.syncName)?.cadenceMinutes ?? null,
     )
     const errorMessage = err instanceof Error ? err.message : String(err)
-    log.error(err, { errorClass, consecutiveFailures, nextRunAt }, 'sync run failed')
+    log.error(
+      runSummary({
+        outcome: 'failed',
+        errorClass,
+        errorMessage,
+        consecutiveFailures,
+        nextRunAt,
+        err,
+      }),
+      'sync run summary',
+    )
     await recordRunFailure(qx, unitId, errorClass, errorMessage, deadLetterAfter, nextRunAt)
     throw err
   } finally {
