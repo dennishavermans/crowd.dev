@@ -23,7 +23,10 @@ export type SyncUnitUpsert = Pick<
   'integrationId' | 'platform' | 'channelId' | 'channelName' | 'syncName'
 >
 
-export type IClaimedUnit = Pick<ISyncUnit, 'id' | 'integrationId' | 'platform' | 'syncName'>
+export type IClaimedUnit = Pick<
+  ISyncUnit,
+  'id' | 'integrationId' | 'platform' | 'syncName' | 'channelId' | 'channelName'
+>
 
 export interface ISyncRunSuccess {
   watermark: Record<string, unknown>

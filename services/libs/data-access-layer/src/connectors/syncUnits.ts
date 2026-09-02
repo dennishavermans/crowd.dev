@@ -55,7 +55,7 @@ export async function claimDueUnits(qx: QueryExecutor, limit: number): Promise<I
        LIMIT $(limit)
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING su.id, su."integrationId", su.platform, su."syncName"`,
+     RETURNING su.id, su."integrationId", su.platform, su."syncName", su."channelId", su."channelName"`,
     { limit, leaseMinutes: CLAIM_LEASE_MINUTES },
   )
 }

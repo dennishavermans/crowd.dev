@@ -15,6 +15,7 @@ const DEFAULT_RUN_ESTIMATE = 50
 const DEFER_MIN_MS = 30_000
 const DEFER_JITTER_MS = 60_000
 const BUDGET_PROBE_CONCURRENCY = 10
+const CHANNEL_LABEL_MAX_LENGTH = 80
 
 export async function claimDue(limit: number): Promise<IClaimedUnit[]> {
   return claimDueUnits(dbStoreQx(svc.postgres.writer), limit)
@@ -39,14 +40,36 @@ export async function deferUnit(unitId: string): Promise<void> {
   await rescheduleUnit(dbStoreQx(svc.postgres.writer), unitId, new Date(Date.now() + delayMs))
 }
 
+function channelLabel(channelName: string): string {
+  const label = channelName
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, '')
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\s+/g, '-')
+    .slice(0, CHANNEL_LABEL_MAX_LENGTH)
+
+  return label || 'unknown-channel'
+}
+
+export function syncRunWorkflowId(unit: IClaimedUnit): string {
+  return `sync-run/${unit.platform}/${unit.syncName}/${channelLabel(unit.channelName)}/${unit.id}`
+}
+
 export async function startRun(unit: IClaimedUnit): Promise<StartRunResult> {
   try {
     await svc.temporal.workflow.start('syncRun', {
       taskQueue: TASK_QUEUE,
-      workflowId: `sync-run/${unit.id}`,
+      workflowId: syncRunWorkflowId(unit),
       workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
       workflowIdConflictPolicy: WorkflowIdConflictPolicy.FAIL,
       args: [unit.id],
+      memo: {
+        unitId: unit.id,
+        integrationId: unit.integrationId,
+        platform: unit.platform,
+        syncName: unit.syncName,
+        channelId: unit.channelId,
+        channelName: unit.channelName,
+      },
     })
     return 'started'
   } catch (err) {
