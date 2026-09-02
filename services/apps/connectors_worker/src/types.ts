@@ -6,3 +6,13 @@ export interface IAdmissionResult {
   admitted: IClaimedUnit[]
   deferred: IClaimedUnit[]
 }
+
+export interface IDispatchCounts {
+  claimed: number
+  admitted: number
+  deferred: number
+  started: number
+  alreadyRunning: number
+  failed: number
+  durationMs: number
+}

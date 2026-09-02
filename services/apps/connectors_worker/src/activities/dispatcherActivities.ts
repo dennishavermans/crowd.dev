@@ -7,7 +7,7 @@ import { WorkflowIdConflictPolicy, WorkflowIdReusePolicy } from '@crowd/temporal
 
 import { svc } from '../main'
 import { runningProbeRunAt, shortDeferRunAt } from '../scheduling'
-import type { IAdmissionResult, StartRunResult } from '../types'
+import type { IAdmissionResult, IDispatchCounts, StartRunResult } from '../types'
 
 const TASK_QUEUE = 'connectors'
 const HEARTBEAT_TTL_SECONDS = 300
@@ -27,10 +27,17 @@ export async function admitByBudget(units: IClaimedUnit[]): Promise<IAdmissionRe
     })
     return pool.hasHeadroom(DEFAULT_RUN_ESTIMATE)
   })
-  return {
+  const result = {
     admitted: units.filter((_, index) => headrooms[index]),
     deferred: units.filter((_, index) => !headrooms[index]),
   }
+  if (result.deferred.length > 0) {
+    svc.log.info(
+      { unitIds: result.deferred.map((unit) => unit.id) },
+      'units deferred: no token headroom',
+    )
+  }
+  return result
 }
 
 export async function deferUnit(unitId: string): Promise<void> {
@@ -84,12 +91,17 @@ async function backOffRunningUnit(unit: IClaimedUnit): Promise<void> {
     .catch(() => shortDeferRunAt())
 
   await rescheduleUnit(dbStoreQx(svc.postgres.writer), unit.id, nextRunAt)
+  svc.log.info({ unitId: unit.id, nextRunAt }, 'unit already running, rescheduled probe')
 }
 
 async function runningSince(unit: IClaimedUnit): Promise<Date> {
   const description = await svc.temporal.workflow.getHandle(syncRunWorkflowId(unit)).describe()
 
   return description.startTime
+}
+
+export async function logDispatchSummary(counts: IDispatchCounts): Promise<void> {
+  svc.log.info({ event: 'dispatcher_tick', ...counts }, 'dispatch summary')
 }
 
 export async function touchHeartbeat(): Promise<void> {
