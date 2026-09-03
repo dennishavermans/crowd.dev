@@ -37,17 +37,26 @@ block() {
   exit 2
 }
 
-if echo "$INPUT" | grep -qE '(^|[^[:alnum:]-])--method([= ]|\\")'; then
+# Long flags are matched as substrings so that quoting cannot hide them:
+# the shell strips quotes before gh sees the flag, but the raw hook input
+# still contains them, and "--method" is "--method" inside quotes or out.
+if echo "$INPUT" | grep -qE -- '--method'; then
   block "--method overrides the GET default."
 fi
-if echo "$INPUT" | grep -qE '(^|[[:space:]])-X'; then
-  block "-X overrides the GET default."
-fi
-if echo "$INPUT" | grep -qE '(^|[[:space:]])-(f|F)([[:alnum:]_=-]|[[:space:]]|\\")'; then
+if echo "$INPUT" | grep -qE -- '--(field|raw-field|input)'; then
   block "request parameters switch gh api from GET to POST."
 fi
-if echo "$INPUT" | grep -qE '(^|[^[:alnum:]-])--(field|raw-field|input)([= ]|\\")'; then
-  block "request parameters switch gh api from GET to POST."
+
+# Short flags cluster: gh accepts -iX DELETE and -XDELETE as readily as
+# -X DELETE (measured; --verbose shows the DELETE request line for each).
+# So the guard blocks any short-flag cluster containing X, f, or F. The
+# leading character class keeps a path segment like r-Xtra innocent while
+# still catching a quoted "-X", whose preceding character is a quote.
+if echo "$INPUT" | grep -qE -- '(^|[^[:alnum:]_-])-[[:alpha:]]*X'; then
+  block "-X (alone or in a flag cluster) overrides the GET default."
+fi
+if echo "$INPUT" | grep -qE -- '(^|[^[:alnum:]_-])-[[:alpha:]]*[fF]([^[:alpha:]]|$)'; then
+  block "request parameters (-f/-F) switch gh api from GET to POST."
 fi
 
 exit 0
