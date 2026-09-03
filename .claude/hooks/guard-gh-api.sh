@@ -47,16 +47,25 @@ if echo "$INPUT" | grep -qE -- '--(field|raw-field|input)'; then
   block "request parameters switch gh api from GET to POST."
 fi
 
-# Short flags cluster: gh accepts -iX DELETE and -XDELETE as readily as
-# -X DELETE (measured; --verbose shows the DELETE request line for each).
-# So the guard blocks any short-flag cluster containing X, f, or F. The
-# leading character class keeps a path segment like r-Xtra innocent while
-# still catching a quoted "-X", whose preceding character is a quote.
+# Short flags: gh parses with spf13/pflag, whose documentation admits
+# exactly three value spellings ("-n 1234", "-n=1234", "-n1234") plus
+# boolean clustering ("-abcs1234" is -a -b -c -s 1234). Every method-
+# changing spelling is therefore one token: a dash, optional letters,
+# then X, f, or F, with the value either attached or not. All measured:
+# -XDELETE, -iX DELETE, -fkey=value, -f=key=value, and -ifkey=value each
+# show the non-GET request line under --verbose. So the guard blocks any
+# short-flag cluster containing X, f, or F, with no constraint on what
+# follows the letter: an attached value follows it immediately, which is
+# why requiring a boundary there was itself a bypass. The leading class
+# keeps a path segment like r-Xtra innocent while still catching a quoted
+# "-X", whose preceding character is a quote. Prose like "-friendly" also
+# blocks, and that is not over-matching: gh reads it as -f riendly and
+# says so ("invalid key: riendly").
 if echo "$INPUT" | grep -qE -- '(^|[^[:alnum:]_-])-[[:alpha:]]*X'; then
   block "-X (alone or in a flag cluster) overrides the GET default."
 fi
-if echo "$INPUT" | grep -qE -- '(^|[^[:alnum:]_-])-[[:alpha:]]*[fF]([^[:alpha:]]|$)'; then
-  block "request parameters (-f/-F) switch gh api from GET to POST."
+if echo "$INPUT" | grep -qE -- '(^|[^[:alnum:]_-])-[[:alpha:]]*[fF]'; then
+  block "request parameters (-f/-F, attached or separate) switch gh api from GET to POST."
 fi
 
 exit 0
